@@ -6,8 +6,8 @@ local_repository(
     path = "envoy",
 )
 
-# Must be hand-built with static libs, see bazel-proton tag for failed attempt at bazel genrule
-#     cd proton/bld && cmake -DBUILD_STATIC_LIBS=YES -DSSL_IMPL=none .. && make
+# Must be hand-built with static libs, see bazel-proton branch for broken genrule
+#     cd proton/bld && cmake -DCMAKE_INSTALL_PREFIX=install -DBUILD_STATIC_LIBS=YES -DSSL_IMPL=none .. && make install
 new_local_repository(
     name = "proton",
     path = "proton",
@@ -31,7 +31,7 @@ filegroup(
 """
 )
 
-# FIXME aconway 2018-05-28: SASL dependency
+# TODO aconway 2018-05-28: SASL dependency
 new_local_repository(
     name = "system_libs",
     path = "/usr/lib64",

@@ -39,11 +39,21 @@ envoy_cc_library(
     ],
 )
 
+sh_test(
+    # Test the amqp_server downstream filter
+    name = "test_server",
+    srcs = ["run_test.sh"],
+    args = ["test_server.rb", "-v"],
+    data = [":envoy", "@proton//:ruby", "test_server.rb", "amqp_bridge.yaml"],
+    size = "small"
+)
 
 sh_test(
-    name = "smoke_test",
-    srcs = ["smoke_test.sh"],
-    data = [":envoy", "amqp_bridge.yaml", "test_amqp_client.rb", "@proton//:ruby"],
+    # Test the amqp_client upstream filter
+    name = "test_client",
+    srcs = ["run_test.sh"],
+    args = ["test_client.rb", "-v"],
+    data = [":envoy", "@proton//:ruby", "test_client.rb", "amqp_bridge.yaml"],
     size = "small"
 )
 

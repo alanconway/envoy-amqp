@@ -1,4 +1,3 @@
-#!/usr/bin/env ruby
 #
 # Licensed to the Apache Software Foundation (ASF) under one
 # or more contributor license agreements.  See the NOTICE file
@@ -25,11 +24,12 @@ require 'webrick'
 include Qpid::Proton
 
 # Start a global web server in a thread, used by all tests
-class TestServer < WEBrick::HTTPServer
+class TestHTTPServer < WEBrick::HTTPServer
   def initialize
+    @requests = Queue.new
     #out = WEBrick::Log::new("/dev/null", 7)
     out = WEBrick::Log.new("stderr")
-    # FIXME aconway 2018-05-04: port is hard coded in amqp_bridge.yaml
+    # TODO aconway 2018-05-04: port is hard coded in amqp_bridge.yaml
     super(:Port => 8000, :Logger => out, :AccessLog => out)
     mount_proc "/" do |req, res|
       @req = req.dup
@@ -38,19 +38,14 @@ class TestServer < WEBrick::HTTPServer
       res.body = "response=#{req.body}"
     end
     @thread = Thread.new { start }
-    @lock = Mutex.new
   end
+
+  def join() @thread.join; end
 
   attr_reader :req
 
-  def stop
-    super
-    @thread.join
-  end
-
-  @@instance = TestServer.new
+  @@instance = TestHTTPServer.new
   def self.get() @@instance; end
-  def self.stop() @@instance.stop if @@instance; end
 end
 
 # MessagingHandler that raises in on_error to catch unexpected errors
@@ -72,17 +67,16 @@ def raise_status(status)
   end
 end
 
-class TestClient < ExceptionMessagingHandler
-  include Qpid::Proton
+class TestAMQPClient < ExceptionMessagingHandler
 
   def initialize(requests, opts={})
-    @netaddr = opts[:netaddr] || ":10000"
+    @netaddr = opts[:netaddr] || ":18000"
     @linkaddr = opts[:linkaddr]
     @vhost = opts[:vhost]
-    @id = opts[:id] || "amqp_client_test"
     @requests = requests
     @responses = []
-    Container.new(self, @id).run()
+    raise "No requests" if requests.empty?
+    Container.new(self, "#{__FILE__}-#{Process::pid}").run()
   end
 
   attr_reader :responses, :reply_to
@@ -117,7 +111,7 @@ class TestClient < ExceptionMessagingHandler
   end
 
   def on_tracker_settle(tracker)
-    # FIXME aconway 2018-05-07: need full disposition
+    # TODO aconway 2018-05-07: need full disposition
     response tracker.state unless tracker.state == Tracker::ACCEPTED
   end
 
@@ -135,13 +129,11 @@ class TestClient < ExceptionMessagingHandler
 
 end
 
-class AmqpBridgeTest < MiniTest::Test
-  include Qpid::Proton
+class EnvoyAmqpServerTest < MiniTest::Test
 
-
-  def request(*args) TestClient.request(*args); end
-  def requests(*args) TestClient.requests(*args);  end
-  def server_req() TestServer.get.req; end
+  def request(*args) TestAMQPClient.request(*args); end
+  def requests(*args) TestAMQPClient.requests(*args);  end
+  def server_req() TestHTTPServer.get.req; end
 
   def test_mapping
     a = "/#{__method__}"
@@ -154,14 +146,14 @@ class AmqpBridgeTest < MiniTest::Test
     res = request(req)
 
     # Check the HTTP request
-    assert_equal "POST", server_req.request_method
-    assert_equal a, server_req.unparsed_uri
-    headers = server_req.to_enum(:each).to_a
-    assert_includes headers, ["host", ""]
-    assert_includes headers, ["content-length", "5"]
-    assert_includes headers, ["content-type", "thing"]
-    assert_includes headers, ["bling", "blang"]
-    assert_includes headers, ["marco", "polo"]
+    s = server_req
+    assert_equal "POST", s.request_method, s
+    assert_equal a, s.unparsed_uri, s
+    assert_equal "", s["host"], s
+    assert_equal "5", s["content-length"], s
+    assert_equal "thing", s["content-type"], s
+    assert_equal "blang", s["bling"], s
+    assert_equal "polo", s["marco"], s
 
 
     # Check the AMQP response
@@ -169,47 +161,55 @@ class AmqpBridgeTest < MiniTest::Test
     assert_equal "200 OK", res.subject
     assert_equal "response=hello", res.body
     assert_equal "stuff", res.content_type
-    props = res.properties.to_a
-    assert_includes props, ["server", "envoy"]
-    assert_includes props, ["content-length", res.body.size.to_s]
-    assert_includes props, ["ping", "pong"]
+    assert_equal "envoy", res["server"], res
+    assert_equal "pong", res["ping"], res
   end
 
   def test_methods
     addr = "/#{__method__}"
-    res = request(Message.new("blubber", {:subject=>"POST", :address=>addr+"/x"}))
+    request(Message.new("blubber", {:subject=>"POST", :address=>addr+"/x"}))
     assert_equal "POST", server_req.request_method
-    res = request(Message.new(nil, {:subject=>"GET", :address=>addr+"/y"}))
+    request(Message.new(nil, {:subject=>"GET", :address=>addr+"/y"}))
     assert_equal "GET", server_req.request_method
   end
 
   def test_address_uri
     a = "/#{__method__}"
-    res = request(Message.new(nil, {:subject=>"GET", :address=>a+"/x"}))
+    request(Message.new(nil, {:subject=>"GET", :address=>a+"/x"}))
     assert_equal "#{a}/x", server_req.unparsed_uri
     # Fall back to link address if there is no to address
-    res = request(Message.new(nil, {:subject=>"GET"}), {:linkaddr => a+"/l"})
+    request(Message.new(nil, {:subject=>"GET"}), {:linkaddr => a+"/l"})
     assert_equal "#{a}/l", server_req.unparsed_uri
   end
 
   def test_http_errors
+    # TODO aconway 2018-06-06: review error message contents
     a = "/#{__method__}"
-    m = Message.new("", { :address => a })
+    m = Message.new("", { :address => a, :correlation_id => 42 })
+
     # Errors detected at the bridge
     m.subject = "BAD_METHOD"
-    assert_raises(Rejected) { request(m) }
+    res = request(m)
+    assert_equal ["400 Bad Request", 42], [res.subject, res.correlation_id], res
+
     m.subject = "GET"
-    m.address = "bad_uri"
-    assert_raises(Rejected) { request(m) }
+    m.address = "!@#!@!bad_uri"
+    res = request(m)
+    assert_equal ["400 Bad Request", 42], [res.subject, res.correlation_id], res
+
     m.address = ""
-    assert_raises(Rejected) { request(m) }
+    res = request(m)
+    assert_equal ["400 Bad Request", 42], [res.subject, res.correlation_id], res
+
     # Errors returned by the HTTP server
     m.address = a
     m.properties = { "test-status"=>"404"}
-    assert_raises(Rejected) { request(m) }
+    res = request(m)
+    assert_equal ["404 Not Found", 42], [res.subject, res.correlation_id], res
+
     m.properties = { "test-status"=>"505"}
-    assert_raises(Modified) { request(m) }
-    # FIXME aconway 2018-05-14: no reply_to is an error? Maybe not for POST.
+    res = request(m)
+    assert_equal ["505 HTTP Version Not Supported", 42], [res.subject, res.correlation_id], res
   end
 
   # "persistent" in HTTP-speak means sending more than one request per connection.
@@ -229,9 +229,13 @@ class AmqpBridgeTest < MiniTest::Test
     assert_equal(data.map { |x| "response=#{x}" }, responses.map { |m| m.body })
   end
 
+  def test_body_types
+    a = "/#{__method__}/"
+    assert_equal "400 Bad Request", request(Message.new([:not_a_legal_body], { :address=>a, :subject=>"POST" })).subject
+  end
 end
 
 MiniTest.after_run do
-  TestServer.stop
+  TestHTTPServer.get.shutdown
 end
 
