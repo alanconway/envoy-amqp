@@ -61,7 +61,6 @@ const std::string CRLF = "\r\n";
 const std::string HTTP_VERSION_CRLF = "HTTP/1.1\r\n";
 const std::string POST = "POST";
 const std::string HOST { "host" };
-const Http::LowerCaseString USER_AGENT { "user-agent" };
 const Http::LowerCaseString CONTENT_LENGTH { "content-length" };
 const Http::LowerCaseString CONTENT_TYPE { "content-type" };
 const Http::LowerCaseString AMQP_CORRELATION_ID { "amqp-correlation-id" };
@@ -91,13 +90,10 @@ class Uri {
 // Convert AMQP message to HTTP and append to a Buffer::Instance
 class HttpRequestBuilder {
   Buffer::Instance& http_;
-  const std::string user_agent_;
   std::string content_;          // Allow std::string to reserve some memory
 
  public:
-  HttpRequestBuilder(Buffer::Instance& http, const std::string& user_agent) :
-    http_(http), user_agent_(user_agent)
-  {}
+  HttpRequestBuilder(Buffer::Instance& http) : http_(http) {}
 
   void request(const std::string& method, const std::string& uri) {
     http_.add(method);
@@ -126,7 +122,6 @@ class HttpRequestBuilder {
     request(method, uri);
     header(HOST, host); // Required by HTTP/1.1
     if (!m.content_type().empty()) header(CONTENT_TYPE.get(), m.content_type());
-    if (!user_agent_.empty()) header(USER_AGENT.get(), user_agent_);
     if (!m.correlation_id().empty()) header(AMQP_CORRELATION_ID.get(), to_string(m.correlation_id()));
     std::vector<std::pair<std::string, proton::scalar> > properties;
     proton::get(m.properties().value(), properties);
@@ -163,12 +158,10 @@ class AmqpResponseBuilder : public Logger::Loggable<Logger::Id::filter>
   std::string url_, body_, field_, value_, status_;
   proton::message response_;  bool in_value_, done_;
   Network::Connection* conn_ {nullptr};
-  std::string user_agent_;
 
  public:
 
-  AmqpResponseBuilder(const std::string user_agent) : user_agent_(user_agent)
-  {
+  AmqpResponseBuilder() {
     http_parser_init(&parser_, HTTP_RESPONSE);
     parser_.data = this;
   }
@@ -320,8 +313,7 @@ class AmqpBridge : public Network::Filter,
                  public Logger::Loggable<Logger::Id::filter>,
                  public proton::messaging_handler
 {
-  std::string user_agent_ { NAME }; // User agent name
-  std::string container_id_ {user_agent_ + ":" + proton::uuid::random().str() };
+  std::string container_id_ { "envoy." + proton::uuid::random().str() };
   std::string dynamic_prefix_ {"_#$"}; // Dynamic address prefix avoid URL/AMQP address clashes
 
   long dynamic_count_ {1};        // Counter to generate dynamic addresses
@@ -337,7 +329,7 @@ class AmqpBridge : public Network::Filter,
   Network::Connection& conn() { return read_callbacks_->connection(); }
 
  public:
-  AmqpBridge(Server::Configuration::FactoryContext&) : response_(user_agent_) {}
+  AmqpBridge(Server::Configuration::FactoryContext&) : response_() {}
 
   // == Envoy Network callbacks
 
@@ -399,7 +391,7 @@ class AmqpBridge : public Network::Filter,
 
   void on_message(proton::delivery& d, proton::message& m) override {
     try {
-      HttpRequestBuilder(http_out_, user_agent_).message(d, m); // Forward HTTP request
+      HttpRequestBuilder(http_out_).message(d, m); // Forward HTTP request
       requests_.push_back(std::make_pair(d, m));
       ENVOY_CONN_LOG(debug, "AMQP request will be forwarded as HTTP: {}", conn(), m);
     } catch (const Uri::Error& e) {

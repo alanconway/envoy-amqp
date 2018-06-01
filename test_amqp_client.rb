@@ -160,7 +160,6 @@ class AmqpBridgeTest < MiniTest::Test
     assert_includes headers, ["host", ""]
     assert_includes headers, ["content-length", "5"]
     assert_includes headers, ["content-type", "thing"]
-    assert_includes headers, ["user-agent", "envoy.filters.network.amqp_bridge"]
     assert_includes headers, ["bling", "blang"]
     assert_includes headers, ["marco", "polo"]
 

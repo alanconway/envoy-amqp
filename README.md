@@ -190,7 +190,7 @@ Complete the amqp-bridge
 - [ ] Envoy to load shared modules (envoyproxy/envoy#2053)
 - [ ] Network filter callback for downstream write (envoyproxy/envoy#3343)
 - [ ] Use Envoy's HTTP codec - maturity, support for HTTP2
-- [ ] Configuration of hard-coded values: credit window, user-agent, container-id, dynamic-prefix etc.
+- [ ] Configuration of hard-coded values: credit window, container-id, dynamic-prefix etc.
 
 Testing
 - [ ] Automated unit and integration tests under bazel
