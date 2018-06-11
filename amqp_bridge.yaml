@@ -40,6 +40,8 @@ static_resources:
               routes:
               - match: { prefix: "/" }
                 route: { cluster: upstream_amqp }
+              - match: { prefix: "/2" }
+                route: { cluster: upstream_amqp2 }
           http_filters:
           - name: envoy.router
             config: {}
@@ -55,6 +57,14 @@ static_resources:
   - name: upstream_amqp
     filters:
     - name: envoy.filters.network.amqp_client
+    connect_timeout: 0.25s
+    type: STATIC
+    hosts: [{ socket_address: { address: 127.0.0.1, port_value: 5672 }}]
+
+  - name: upstream_amqp2
+    filters:
+    - name: envoy.filters.network.amqp_client
+      config: { request_target: target }
     connect_timeout: 0.25s
     type: STATIC
     hosts: [{ socket_address: { address: 127.0.0.1, port_value: 5672 }}]

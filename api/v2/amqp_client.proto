@@ -1,0 +1,18 @@
+syntax = "proto3";
+
+package envoy.config.filter.network.amqp_client.v2;
+option go_package = "v2";
+
+import "validate/validate.proto";
+
+// [#protodoc-title: AMQP Client]
+// AMQP Client :ref:`configuration overview <config_network_filters_amqp_client>`.
+
+message AmqpClient {
+  // Optional link target address for requests.
+  // Envoy will open a sender link with this target address and send requests on it.
+  // The requests still carry the HTTP URI as their "to" address,
+  // this link allows Envoy to direct requests via an intermediary such as a router
+  // or broker.
+  string request_target = 1;
+}

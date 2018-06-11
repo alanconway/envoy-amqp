@@ -25,7 +25,11 @@
 #include "envoy/network/filter.h"
 #include "envoy/registry/registry.h"
 #include "envoy/server/filter_config.h"
-#include "http_parser.h"
+#include "extensions/filters/network/common/factory_base.h"
+// FIXME aconway 2018-06-11: move to envoy config hierarchy.
+#include "api/v2/amqp_client.pb.validate.h"
+#include "api/v2/amqp_server.pb.validate.h"
+
 #include "proton/codec/map.hpp"
 #include "proton/connection.hpp"
 #include "proton/delivery.hpp"
@@ -42,6 +46,8 @@
 #include "proton/target.hpp"
 #include "proton/target_options.hpp"
 
+#include "http_parser.h"
+
 #include <cctype>
 #include <deque>
 
@@ -51,16 +57,15 @@ namespace NetworkFilters {
 namespace Amqp {
 
 typedef Logger::Loggable<Logger::Id::filter> Loggable;
-const char SERVER_NAME[]{"amqp_server"};
-const char CLIENT_NAME[]{"amqp_client"};
 
-const std::string FILTER_NAME_PREFIX = "envoy.filters.network.";
+const std::string FILTER_PREFIX = "envoy.filters.network.";
+
 const std::string SP = " ";
 const std::string COLON_SP = ": ";
 const std::string CRLF = "\r\n";
 const std::string HTTP_VERSION = "HTTP/1.1";
 const std::string POST = "POST";
-const std::string ANONYMOUS_RELAY="ANONYMOUS-RELAY";
+const std::string ANONYMOUS_RELAY = "ANONYMOUS-RELAY";
 const Http::LowerCaseString HOST{"host"};
 const Http::LowerCaseString CONTENT_LENGTH{"content-length"};
 const Http::LowerCaseString CONTENT_TYPE{"content-type"};
@@ -494,7 +499,13 @@ private:
 /// Filter for incoming connections from AMQP request/response clients.
 class AmqpServer : public AmqpBridge {
 public:
-  AmqpServer() { driver_.accept(connection_opts_); }
+  static const std::string NAME;
+  typedef envoy::config::filter::network::amqp_server::v2::AmqpServer Config;
+
+  AmqpServer(const Config& config) {
+    driver_.accept(connection_opts_);
+    request_source_ = config.request_source();
+  }
 
   // == proton::messaging_handler overrides
 
@@ -563,14 +574,21 @@ private:
         : delivery(d), message(m), sender(s) {}
   };
 
+  std::string request_source_;   // FIXME aconway 2018-06-11: implement
   std::deque<Request> requests_;
   AmqpResponseBuilder response_;
 };
 
+const std::string AmqpServer::NAME = FILTER_PREFIX + "amqp_server";
+
 /// Filter for incoming connections from AMQP request/response clients.
 class AmqpClient : public AmqpBridge {
 public:
-  AmqpClient() {
+  static const std::string NAME;
+  typedef envoy::config::filter::network::amqp_client::v2::AmqpClient Config;
+
+  AmqpClient(const Config& config) {
+    request_target_ = config.request_target();
     driver_.connect(connection_opts_);
     proton::receiver_options ro;
     ro.source(proton::source_options().dynamic(true));
@@ -652,6 +670,7 @@ private:
     }
   };
 
+  std::string request_target_;   // FIXME aconway 2018-06-11: implement
   AmqpRequestBuilder request_;
   proton::receiver receiver_;
   bool receiver_ready_{false};
@@ -672,37 +691,37 @@ private:
   }
 };
 
-using namespace Server::Configuration;
+const std::string AmqpClient::NAME = FILTER_PREFIX + "amqp_client";
 
-template <class Filter, const char *Name>
-class ConfigFactory : public NamedNetworkFilterConfigFactory {
+template <class Filter>
+class Factory : public Common::FactoryBase<typename Filter::Config> {
+  typedef typename Filter::Config Config;
+
 public:
+  Factory() : Common::FactoryBase<Config>(Filter::NAME) {}
+
   Network::FilterFactoryCb
-  createFilterFactoryFromProto(const Protobuf::Message &,
-                               FactoryContext &fc) override {
-    return [this, &fc](Network::FilterManager &filter_manager) -> void {
-      filter_manager.addFilter(std::make_shared<Filter>());
-    };
-  }
-
-  ProtobufTypes::MessagePtr createEmptyConfigProto() override {
-    return ProtobufTypes::MessagePtr{new Envoy::ProtobufWkt::Empty()};
-  }
-
-  std::string name() override { return FILTER_NAME_PREFIX + Name; }
-
-  Network::FilterFactoryCb createFilterFactory(const Json::Object &,
-                                               FactoryContext &) override {
+  createFilterFactory(const Json::Object &,
+                      Server::Configuration::FactoryContext &) {
     NOT_IMPLEMENTED;
   }
 
-  typedef Registry::RegisterFactory<ConfigFactory<Filter, Name>,
-                                    NamedNetworkFilterConfigFactory>
+  typedef Registry::RegisterFactory<
+      Factory<Filter>, Server::Configuration::NamedNetworkFilterConfigFactory>
       Register;
+
+private:
+  Network::FilterFactoryCb createFilterFactoryFromProtoTyped(
+      const Config &config,
+      Server::Configuration::FactoryContext &) override {
+    return [=](Network::FilterManager &filter_manager) -> void {
+      filter_manager.addFilter(std::make_shared<Filter>(config));
+    };
+  }
 };
 
-static ConfigFactory<AmqpServer, SERVER_NAME>::Register server_registerd_;
-static ConfigFactory<AmqpClient, CLIENT_NAME>::Register client_registerd_;
+static Factory<AmqpClient>::Register client_registerd_;
+static Factory<AmqpServer>::Register server_registerd_;
 
 } // namespace Amqp
 } // namespace NetworkFilters

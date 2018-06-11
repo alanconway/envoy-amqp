@@ -1,23 +1,18 @@
 #!/bin/bash
 set -e
 
-# Check if a port is listening
-listening() {
-    ss -Htln | egrep -q -m1 '^LISTEN\s+[0-9]+\s+[0-9]+\s+.*:'$1'\s'
-}
+envoy -l warning -c amqp_bridge.yaml --disable-hot-restart &
+PID=$!
+trap "kill -9 $PID" EXIT
 
-startup() {
-    envoy -l warning -c amqp_bridge.yaml --disable-hot-restart &
-    PID=$!
-    until listening 15672 && listening 18000 && listening 9901; do
-        sleep .1
-    done
-    trap "kill -9 $PID" EXIT
-}
+# Wait for envoy to be listening on both test ports
+listening() { nc -v -z localhost $1; }
+until listening 18000 && listening 15672; do sleep .1; done
 
-startup
-RUBYLIB=external/proton/ruby/lib:external/proton/bld/ruby ruby "$@"
-shutdown
+test -d external && DIR=external/ # Run from bazel test or from this directory
+export RUBYLIB=${DIR}proton/ruby/lib:${DIR}proton/bld/ruby
+ruby "$@"
+
 kill $PID
 wait
 trap "" EXIT

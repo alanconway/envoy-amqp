@@ -1,0 +1,18 @@
+syntax = "proto3";
+
+package envoy.config.filter.network.amqp_server.v2;
+option go_package = "v2";
+
+import "validate/validate.proto";
+
+// [#protodoc-title: AMQP Server]
+// AMQP Server :ref:`configuration overview <config_network_filters_amqp_server>`.
+
+message AmqpServer {
+  // Optional AMQP source address for requests.
+  // Envoy will open a receiver link with this source address and
+  // expect requests on it. The requests must still carry the HTTP URI
+  // as their "to" address, this link allows Envoy to "subscribe"
+  // for requests from an intermediary such as a router or broker.
+  string request_source = 1;
+}
