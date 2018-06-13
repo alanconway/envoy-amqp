@@ -104,7 +104,7 @@ public:
   Uri(const std::string &uri, bool is_connect = false) : uri_(uri) {
     http_parser_url_init(&parser_);
     if (http_parser_parse_url(uri_.data(), uri_.size(), is_connect, &parser_)) {
-      throw EnvoyException("invalid URI: " + uri_);
+      throw EnvoyException("invalid URI \"" + uri_ + "\"");
     }
   }
   std::string host() const { return field(UF_HOST); }
@@ -186,8 +186,8 @@ private:
       break;
 
     default:
-      throw EnvoyException("invalid AMQP body type: " +
-                           proton::type_name(m.body().type()));
+      throw EnvoyException("'" + proton::type_name(m.body().type()) +
+                           "' message-body type is not allowed");
       break;
     }
 
@@ -376,6 +376,12 @@ const http_parser_settings AmqpBuilder::settings_ = {
     .on_chunk_header = nullptr,
     .on_chunk_complete = nullptr};
 
+// Shortcuts for logging with filter name in AmqpBridge subclasses.
+#define LOG(LEVEL, FORMAT, ...)                                                \
+  ENVOY_LOG(LEVEL, "[{}] " FORMAT, name_, ##__VA_ARGS__)
+#define CONN_LOG(LEVEL, FORMAT, ...)                                           \
+  ENVOY_CONN_LOG(LEVEL, "[{}] " FORMAT, conn(), name_, ##__VA_ARGS__)
+
 /// Base class bridges between AMQP and HTTP on a single connection regardless
 /// of whether the connection is incoming/outgoing or direction of request and
 /// response
@@ -386,11 +392,14 @@ class AmqpBridge : public proton::messaging_handler,
 public:
   typedef envoy::config::filter::network::amqp_bridge::v2::AmqpBridge Config;
 
-  AmqpBridge(const Config &config) : request_relay_(config.request_relay()) {
+  AmqpBridge(const std::string &name, const Config &config)
+      : name_(name), request_relay_(config.request_relay()) {
     auto cid = config.container_id();
     if (cid.empty()) {
       cid = "envoy-" + proton::uuid::random().str();
     }
+    LOG(debug, "configuration: request_relay: \"{}\", container_id: \"{}\"",
+        request_relay_, cid);
     connection_opts_.handler(*this).container_id(cid);
   }
 
@@ -446,7 +455,7 @@ public:
   };
 
 protected:
-  // FIXME aconway 2018-06-12: configuration
+  const std::string name_;
   const std::string request_relay_;
   proton::connection_options connection_opts_;
   proton::io::connection_driver driver_;
@@ -517,12 +526,10 @@ class AmqpServer : public AmqpBridge {
 public:
   static const std::string NAME;
 
-  AmqpServer(const Config &config) : AmqpBridge(config) {
+  AmqpServer(const Config &config) : AmqpBridge(NAME, config) {
     driver_.accept(connection_opts_);
     // Optional request link
     if (!request_relay_.empty()) {
-      ENVOY_LOG(debug, "[amqp_server] requests from link address {}",
-                request_relay_);
       receiver_ = driver_.connection().open_receiver(request_relay_);
     }
   }
@@ -533,18 +540,17 @@ public:
   void on_message(proton::delivery &d, proton::message &m) override {
     auto i = senders_.find(m.reply_to());
     if (i == senders_.end()) {
-      ENVOY_CONN_LOG(error, "[amqp_server] unknown reply_to address: {}", conn(), m);
-      d.reject();               // Can't send a response
+      CONN_LOG(error, "unknown reply_to address: {}", m);
+      d.reject(); // Can't send a response
       return;
     }
-    ENVOY_CONN_LOG(debug, "[amqp_server] received request: {}", conn(), m);
+    CONN_LOG(debug, "received request: {}", m);
     requests_.push_back(Request(d, m, i->second));
-    d.accept();                 // We will send a response (may be an error)
+    d.accept(); // We will send a response (may be an error)
     try {
       HttpEncoder(http_out_).request(d, m); // Forward HTTP request
     } catch (const std::exception &e) {
-      ENVOY_CONN_LOG(error, "[amqp_server] bad request: {}: {}", conn(),
-                     e.what(), m);
+      CONN_LOG(error, "bad request: {}: {}", e.what(), m);
       proton::message m(e.what());
       m.subject("400 Bad Request");
       sendResponse(m);
@@ -559,8 +565,7 @@ protected:
   void processHttp(bool end_http) {
     while (response_.parse(http_in_, end_http)) {
       if (requests_.empty()) {
-        ENVOY_CONN_LOG(error, "[amqp_server] unexpected response: {}", conn(),
-                       response_.message());
+        CONN_LOG(error, "unexpected response: {}", response_.message());
       } else {
         int code = response_.code();
         std::string status = response_.status();
@@ -568,8 +573,7 @@ protected:
         switch (type) {
         case 1: // Informational
         case 3: // Redirect
-          ENVOY_CONN_LOG(debug, "[amqp_server] ignoring response: '{} {}'",
-                         conn(), code, status);
+          CONN_LOG(debug, "ignoring response: {} {}", code, status);
           continue;
         }
         auto res = response_.message();
@@ -585,7 +589,7 @@ protected:
     auto correlation = req.message.correlation_id();
     if (!correlation.empty())
       res.correlation_id(correlation);
-    ENVOY_CONN_LOG(debug, "[amqp_server] sending response: {}", conn(), res);
+    CONN_LOG(debug, "sending response: {}", res);
     req.sender.send(res);
   }
 
@@ -603,7 +607,7 @@ private:
   proton::receiver receiver_;
 };
 
-const std::string AmqpServer::NAME = FILTER_PREFIX + "amqp_server";
+const std::string AmqpServer::NAME = "amqp_server";
 
 /// Filter for incoming connections from AMQP request/response clients.
 class AmqpClient : public AmqpBridge {
@@ -612,7 +616,7 @@ public:
 
   // FIXME aconway 2018-06-12: rename request_target?
 
-  AmqpClient(const Config &config) : AmqpBridge(config) {
+  AmqpClient(const Config &config) : AmqpBridge(NAME, config) {
     driver_.connect(connection_opts_);
     // Dynamic response link
     proton::receiver_options ro;
@@ -620,8 +624,6 @@ public:
     receiver_ = driver_.connection().open_receiver("", ro);
     // Optional request link
     if (!request_relay_.empty()) {
-      ENVOY_LOG(debug, "[amqp_client] requests to link address {}",
-                request_relay_);
       sender_ = getSender(request_relay_);
     }
   }
@@ -664,9 +666,7 @@ protected:
         sendHttpResponses();
         return;
       }
-      ENVOY_CONN_LOG(error,
-                     "client received response with bad correlation-id: {}",
-                     conn(), m);
+      CONN_LOG(error, "received response with bad correlation-id: {}", m);
     }
   }
 
@@ -679,7 +679,7 @@ protected:
         m.correlation_id(cid);
         m.reply_to(receiver_.source().address());
         proton::sender s = !!sender_ ? sender_ : getSender(m.address());
-        ENVOY_CONN_LOG(debug, "[amqp_client] sending request {}", conn(), m);
+        CONN_LOG(debug, "sending request: {}", m);
         auto tracker = s.send(m);
         trackers_[tracker] = cid;
       }
@@ -710,15 +710,14 @@ private:
     auto i = requests_.begin();
     for (; i != requests_.end() && i->second.ready; ++i) {
       Request &r = i->second;
-      ENVOY_CONN_LOG(debug, "[amqp_client] sending response: {}", conn(),
-                     r.response);
+      CONN_LOG(debug, "sending response: {}", r.response);
       HttpEncoder(http_out_).response(i->second.response);
     }
     requests_.erase(requests_.begin(), i);
   }
 };
 
-const std::string AmqpClient::NAME = FILTER_PREFIX + "amqp_client";
+const std::string AmqpClient::NAME = "amqp_client";
 
 template <class Filter>
 class Factory : public Common::FactoryBase<typename Filter::Config>,
@@ -726,7 +725,7 @@ class Factory : public Common::FactoryBase<typename Filter::Config>,
   typedef typename Filter::Config Config;
 
 public:
-  Factory() : Common::FactoryBase<Config>(Filter::NAME) {}
+  Factory() : Common::FactoryBase<Config>(FILTER_PREFIX + Filter::NAME) {}
 
   Network::FilterFactoryCb
   createFilterFactory(const Json::Object &,
