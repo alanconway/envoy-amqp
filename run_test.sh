@@ -1,6 +1,6 @@
 #!/bin/bash
 set -e
-envoy -l debug -c amqp_bridge.yaml --disable-hot-restart &
+PN_TRACE_FRM=1 envoy -l debug -c amqp_bridge.yaml --disable-hot-restart &
 PID=$!
 trap "kill -9 $PID" EXIT
 

@@ -26,7 +26,7 @@
 #include "envoy/registry/registry.h"
 #include "envoy/server/filter_config.h"
 #include "extensions/filters/network/common/factory_base.h"
-// FIXME aconway 2018-06-11: move to envoy config hierarchy.
+// TODO aconway 2018-06-11: move to envoy config hierarchy.
 #include "api/v2/amqp_bridge.pb.validate.h"
 
 #include "proton/codec/map.hpp"
@@ -55,6 +55,13 @@ namespace Extensions {
 namespace NetworkFilters {
 namespace Amqp {
 
+// tpyedef verbose proton::*_options classes
+typedef proton::connection_options ConOpts;
+typedef proton::sender_options SndOpt;
+typedef proton::receiver_options RcvOpt;
+typedef proton::target_options TgtOpt;
+typedef proton::source_options SrcOpt;
+
 typedef Logger::Loggable<Logger::Id::filter> Loggable;
 
 const std::string FILTER_PREFIX = "envoy.filters.network.";
@@ -64,7 +71,6 @@ const std::string COLON_SP = ": ";
 const std::string CRLF = "\r\n";
 const std::string HTTP_VERSION = "HTTP/1.1";
 const std::string POST = "POST";
-const std::string ANONYMOUS_RELAY = "ANONYMOUS-RELAY";
 const Http::LowerCaseString HOST{"host"};
 const Http::LowerCaseString CONTENT_LENGTH{"content-length"};
 const Http::LowerCaseString CONTENT_TYPE{"content-type"};
@@ -72,6 +78,9 @@ const Http::LowerCaseString CONTENT_ENCODING{"content-encoding"};
 const Http::LowerCaseString TEXT_PLAIN_UTF8{"text/plain; charset=utf-8"};
 const Http::LowerCaseString APPLICATION_OCTET_STREAM{
     "application/octet-stream"};
+
+const proton::symbol ANONYMOUS_RELAY = "ANONYMOUS-RELAY";
+const std::vector<proton::symbol> ANONYMOUS_RELAY_CAPABILITIES{ANONYMOUS_RELAY};
 
 bool contentHeader(const Http::LowerCaseString &name) {
   return name == CONTENT_LENGTH || name == CONTENT_TYPE ||
@@ -400,7 +409,10 @@ public:
     }
     LOG(debug, "configuration: request_relay: \"{}\", container_id: \"{}\"",
         request_relay_, cid);
-    connection_opts_.handler(*this).container_id(cid);
+    connection_opts_.handler(*this)
+        .container_id(cid)
+        .desired_capabilities(ANONYMOUS_RELAY_CAPABILITIES)
+        .offered_capabilities(ANONYMOUS_RELAY_CAPABILITIES);
   }
 
   // == Envoy Network::Filter callbacks
@@ -438,21 +450,15 @@ public:
 
   // == proton::messaging_handler callbacks
 
-  void on_sender_open(proton::sender &s) override {
-    if (!s.active()) { // Incoming link
-      proton::sender_options opts;
-      if (s.source().dynamic()) {
-        opts.source(proton::source_options().address(
-            s.connection().container_id() + "/" + s.name()));
-      }
-      s.open(opts);
-    }
-    senders_[s.source().address()] = s;
+  void on_connection_open(proton::connection &c) override {
+    // Check for anonymous relay
+    const std::vector<proton::symbol> &cap = c.offered_capabilities();
+    offers_relay_ =
+        std::find(cap.begin(), cap.end(), ANONYMOUS_RELAY) != cap.end();
+    CONN_LOG(debug, "peer container \"{}\"{}", c.container_id(),
+             (offers_relay_ ? " offers ANONYMOUS-RELAY" : ""));
+    c.open(connection_opts_);
   }
-
-  void on_sender_close(proton::sender &s) override {
-    senders_.erase(s.source().address());
-  };
 
 protected:
   const std::string name_;
@@ -460,11 +466,18 @@ protected:
   proton::connection_options connection_opts_;
   proton::io::connection_driver driver_;
   Buffer::OwnedImpl amqp_in_, amqp_out_, http_in_, http_out_, empty_;
-  std::unordered_map<std::string, proton::sender> senders_;
 
   virtual void processHttp(bool end_http) PURE;
 
   Network::Connection &conn() { return read_callbacks_->connection(); }
+
+  proton::sender &anonymous_relay() {
+    if (offers_relay_ && !anonymous_relay_) {
+      anonymous_relay_ = driver_.connection().open_sender(
+          "", SndOpt().target(TgtOpt().anonymous(true)));
+    }
+    return anonymous_relay_;
+  }
 
   void processHttpNoThrow(bool end_http) {
     try {
@@ -501,15 +514,9 @@ protected:
     } while (driver_.has_events() && driver_.dispatch());
   }
 
-  proton::sender getSender(const std::string target) {
-    auto &s = senders_[target];
-    if (!s) {
-      s = driver_.connection().open_sender(target);
-    }
-    return s;
-  }
-
 private:
+  bool offers_relay_{false};
+  proton::sender anonymous_relay_;
   Network::ReadFilterCallbacks *read_callbacks_{nullptr};
 
   void forceWrite() {
@@ -528,7 +535,6 @@ public:
 
   AmqpServer(const Config &config) : AmqpBridge(NAME, config) {
     driver_.accept(connection_opts_);
-    // Optional request link
     if (!request_relay_.empty()) {
       receiver_ = driver_.connection().open_receiver(request_relay_);
     }
@@ -536,16 +542,28 @@ public:
 
   // == proton::messaging_handler overrides
 
+  void on_sender_open(proton::sender &s) override {
+    if (!s.active() && s.source().dynamic()) {
+      std::string addr = s.connection().container_id() + "/" + s.name();
+      s.open(SndOpt().source((SrcOpt().address(addr))));
+      sources_[addr] = s;
+    }
+  }
+
+  void on_sender_close(proton::sender &s) override {
+    sources_.erase(s.source().address());
+  };
+
   // AMQP request message
   void on_message(proton::delivery &d, proton::message &m) override {
-    auto i = senders_.find(m.reply_to());
-    if (i == senders_.end()) {
+    CONN_LOG(debug, "received request: {}", m);
+    proton::sender s = findSender(m.reply_to());
+    if (!s) {
       CONN_LOG(error, "unknown reply_to address: {}", m);
       d.reject(); // Can't send a response
       return;
     }
-    CONN_LOG(debug, "received request: {}", m);
-    requests_.push_back(Request(d, m, i->second));
+    requests_.push_back(Request(d, m, s));
     d.accept(); // We will send a response (may be an error)
     try {
       HttpEncoder(http_out_).request(d, m); // Forward HTTP request
@@ -605,6 +623,16 @@ private:
   std::deque<Request> requests_;
   AmqpResponseBuilder response_;
   proton::receiver receiver_;
+  std::unordered_map<std::string, proton::sender> sources_;
+
+  proton::sender findSender(const std::string &reply_to) {
+    auto i = sources_.find(reply_to);
+    if (i != sources_.end()) {
+      return i->second;
+    } else {
+      return anonymous_relay();
+    }
+  }
 };
 
 const std::string AmqpServer::NAME = "amqp_server";
@@ -614,17 +642,12 @@ class AmqpClient : public AmqpBridge {
 public:
   static const std::string NAME;
 
-  // FIXME aconway 2018-06-12: rename request_target?
-
   AmqpClient(const Config &config) : AmqpBridge(NAME, config) {
     driver_.connect(connection_opts_);
-    // Dynamic response link
-    proton::receiver_options ro;
-    ro.source(proton::source_options().dynamic(true));
-    receiver_ = driver_.connection().open_receiver("", ro);
-    // Optional request link
+    receiver_ = driver_.connection().open_receiver(
+        "", RcvOpt().source(SrcOpt().dynamic(true)));
     if (!request_relay_.empty()) {
-      sender_ = getSender(request_relay_);
+      named_relay_ = driver_.connection().open_sender(request_relay_);
     }
   }
 
@@ -632,6 +655,7 @@ public:
 
   void on_receiver_open(proton::receiver &r) override {
     if (r == receiver_) {
+      CONN_LOG(debug, "dynamic reply_to address: {}", r.source().address());
       receiver_ready_ = true;
       processHttpNoThrow(
           false); // Process any backlog while waiting for receiver
@@ -643,7 +667,7 @@ public:
     sendResponse(m);
   }
 
-  // AMQP failed settlement is converted a response message
+  // AMQP failed outcome is converted a response message
   void on_tracker_settle(proton::tracker &t) override {
     auto i = trackers_.find(t);
     if (i != trackers_.end()) {
@@ -678,7 +702,7 @@ protected:
         requests_[cid]; // Create a slot for the request
         m.correlation_id(cid);
         m.reply_to(receiver_.source().address());
-        proton::sender s = !!sender_ ? sender_ : getSender(m.address());
+        proton::sender s = getSender(m.address());
         CONN_LOG(debug, "sending request: {}", m);
         auto tracker = s.send(m);
         trackers_[tracker] = cid;
@@ -703,7 +727,23 @@ private:
   uint64_t next_id_{0};
   std::map<uint64_t, Request> requests_;
   std::map<proton::tracker, uint64_t> trackers_;
-  proton::sender sender_;
+  std::unordered_map<std::string, proton::sender> targets_;
+  proton::sender named_relay_;
+
+  proton::sender getSender(const std::string target) {
+    if (named_relay_) {
+      return named_relay_;
+    }
+    auto anon = anonymous_relay();
+    if (anon) {
+      return anon;
+    }
+    auto &s = targets_[target];
+    if (!s) {
+      s = driver_.connection().open_sender(target);
+    }
+    return s;
+  }
 
   void sendHttpResponses() {
     // Send responses in request order

@@ -158,17 +158,6 @@ The server can create the following links:
 - sender to anonymous target, if peer offers ANONYMOUS-RELAY, to send responses.
 - *TODO* receiver for URIs known to Envoy, to advertise service availability.
 
-### AMQP Server Filter
-
-The server filter accepts incoming links to any target address, including the
-anonymous target, for incoming requests. HTTP requests are addressed as per the
-Mapping above.
-
-It accepts incoming *dynamic source* links to to be used when sending responses
-to a reply-to address.
-
-If the peer offers "ANONYMOUS-RELAY" capability, the server will *create* an anonymous-relay link and use it to send responses.
-
 ## Building and testing
 
 *TODO instructions - using static proton build*
@@ -180,12 +169,13 @@ Runs ruby test client/server envoy with the bridge.
 
 
 <a name="todo"></a>
-# TODO lists
+# Things to do
 
 ## Internal cleanup
 Minor fixes and missing features of the bridge:
 - [ ] FIXME and TODO comments
 - [ ] Timers and heartbeats
+- [ ] Error information on reject/modify dispositions
 - [ ] Configuration of hard-coded values: credit window, container-id etc.
 - [ ] Flow control: use AMQP credit and/or Envoy watermark buffers to apply back-pressure
 - [ ] Use Envoy's HTTP codec - maturity, support for HTTP2
@@ -202,22 +192,12 @@ Fixes to Envoy
 
 ## Missing features
 
-*anonymous relay*: The bridge should offer AMQP ANONYMOUS-RELAY capability, and
-should use it if the peer offers it.
+*flexible link configuration*: server to subscribe to multiple named addresses in a router.
 
-*service advertisement*: A bridge connected to a dispatch router should be able
-to create AMQP receiver links based on envoy configuration and/or dynamic
-service discover - in effect advertising those services as AMQP addresses to the
-router.
+*service advertisement*: server to reflect Envoy service configuration/discovery automatically as links to a router.
 
-*inverted connections*: A bride should be able to initiate a connection to a
-dispatch router, but then treat it like a connection from a client - allowing
-incoming requests. Use case is to allow Envoy side-cars to "announce" themselves
-to a well known router, rather than requiring the router to connect to every
-side-car. This requires some work in Envoy, which currently assumes that that
-client/server roles are established by the direction of the connection.
+*inverted server*: put an amqp_server bridge on an *outgoing* envoy connection to a router. Envoy initiates the connection but receives requests from router. Allow Envoy side-cars to "announce" themselves to the router as well as vice-versa.
 
 ## Possible optimizations
 
-*Eliminate double HTTP codec*: Presently the envoy.connection_manager is the only "boundary" filter between a raw Network::Filter chain and a HTTP filter chain. The amqp-bridge filter composes/parses HTTP by itself and exchanges HTTP bytes with the connection-manager, which must parse/compose again. Ideally the amqp-bridge would exchange Envoy HTTP data structures directly with the connection manager or HTTP filter chain to eliminate the duplicated work. A similar argument applies for upstream filters. Needs some thought about best to hook these things together.
-
+*Eliminate double HTTP codec*: amqp_bridge composes/parses HTTP by itself and exchanges HTTP bytes with the Envoy connection-manager, which must parse/compose again. Can we eliminate the double codec?
