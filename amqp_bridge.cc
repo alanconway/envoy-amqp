@@ -27,8 +27,7 @@
 #include "envoy/server/filter_config.h"
 #include "extensions/filters/network/common/factory_base.h"
 // FIXME aconway 2018-06-11: move to envoy config hierarchy.
-#include "api/v2/amqp_client.pb.validate.h"
-#include "api/v2/amqp_server.pb.validate.h"
+#include "api/v2/amqp_bridge.pb.validate.h"
 
 #include "proton/codec/map.hpp"
 #include "proton/connection.hpp"
@@ -385,7 +384,15 @@ class AmqpBridge : public proton::messaging_handler,
                    public Network::Filter,
                    protected Loggable {
 public:
-  AmqpBridge() { connection_opts_.handler(*this).container_id(container_id_); }
+  typedef envoy::config::filter::network::amqp_bridge::v2::AmqpBridge Config;
+
+  AmqpBridge(const Config &config) : request_relay_(config.request_relay()) {
+    auto cid = config.container_id();
+    if (cid.empty()) {
+      cid = "envoy-" + proton::uuid::random().str();
+    }
+    connection_opts_.handler(*this).container_id(cid);
+  }
 
   // == Envoy Network::Filter callbacks
 
@@ -439,7 +446,8 @@ public:
   };
 
 protected:
-  const std::string container_id_{"envoy-" + proton::uuid::random().str()};
+  // FIXME aconway 2018-06-12: configuration
+  const std::string request_relay_;
   proton::connection_options connection_opts_;
   proton::io::connection_driver driver_;
   Buffer::OwnedImpl amqp_in_, amqp_out_, http_in_, http_out_, empty_;
@@ -484,6 +492,14 @@ protected:
     } while (driver_.has_events() && driver_.dispatch());
   }
 
+  proton::sender getSender(const std::string target) {
+    auto &s = senders_[target];
+    if (!s) {
+      s = driver_.connection().open_sender(target);
+    }
+    return s;
+  }
+
 private:
   Network::ReadFilterCallbacks *read_callbacks_{nullptr};
 
@@ -500,30 +516,38 @@ private:
 class AmqpServer : public AmqpBridge {
 public:
   static const std::string NAME;
-  typedef envoy::config::filter::network::amqp_server::v2::AmqpServer Config;
 
-  AmqpServer(const Config& config) {
+  AmqpServer(const Config &config) : AmqpBridge(config) {
     driver_.accept(connection_opts_);
-    request_source_ = config.request_source();
+    // Optional request link
+    if (!request_relay_.empty()) {
+      ENVOY_LOG(debug, "[amqp_server] requests from link address {}",
+                request_relay_);
+      receiver_ = driver_.connection().open_receiver(request_relay_);
+    }
   }
 
   // == proton::messaging_handler overrides
 
   // AMQP request message
   void on_message(proton::delivery &d, proton::message &m) override {
+    auto i = senders_.find(m.reply_to());
+    if (i == senders_.end()) {
+      ENVOY_CONN_LOG(error, "[amqp_server] unknown reply_to address: {}", conn(), m);
+      d.reject();               // Can't send a response
+      return;
+    }
+    ENVOY_CONN_LOG(debug, "[amqp_server] received request: {}", conn(), m);
+    requests_.push_back(Request(d, m, i->second));
+    d.accept();                 // We will send a response (may be an error)
     try {
-      auto i = senders_.find(m.reply_to());
-      if (i == senders_.end())
-        throw EnvoyException("unknown reply_to");
-      ENVOY_CONN_LOG(debug, "[amqp_server] received request: {}", conn(), m);
-      requests_.push_back(Request(d, m, i->second));
       HttpEncoder(http_out_).request(d, m); // Forward HTTP request
     } catch (const std::exception &e) {
       ENVOY_CONN_LOG(error, "[amqp_server] bad request: {}: {}", conn(),
                      e.what(), m);
       proton::message m(e.what());
       m.subject("400 Bad Request");
-      sendResponse(m); // TODO aconway 2018-05-03: should be a response also
+      sendResponse(m);
     }
   }
 
@@ -574,9 +598,9 @@ private:
         : delivery(d), message(m), sender(s) {}
   };
 
-  std::string request_source_;   // FIXME aconway 2018-06-11: implement
   std::deque<Request> requests_;
   AmqpResponseBuilder response_;
+  proton::receiver receiver_;
 };
 
 const std::string AmqpServer::NAME = FILTER_PREFIX + "amqp_server";
@@ -585,14 +609,21 @@ const std::string AmqpServer::NAME = FILTER_PREFIX + "amqp_server";
 class AmqpClient : public AmqpBridge {
 public:
   static const std::string NAME;
-  typedef envoy::config::filter::network::amqp_client::v2::AmqpClient Config;
 
-  AmqpClient(const Config& config) {
-    request_target_ = config.request_target();
+  // FIXME aconway 2018-06-12: rename request_target?
+
+  AmqpClient(const Config &config) : AmqpBridge(config) {
     driver_.connect(connection_opts_);
+    // Dynamic response link
     proton::receiver_options ro;
     ro.source(proton::source_options().dynamic(true));
     receiver_ = driver_.connection().open_receiver("", ro);
+    // Optional request link
+    if (!request_relay_.empty()) {
+      ENVOY_LOG(debug, "[amqp_client] requests to link address {}",
+                request_relay_);
+      sender_ = getSender(request_relay_);
+    }
   }
 
   // == proton::messaging_handler overrides
@@ -647,12 +678,8 @@ protected:
         requests_[cid]; // Create a slot for the request
         m.correlation_id(cid);
         m.reply_to(receiver_.source().address());
-        auto s = senders_[m.address()];
-        if (!s) {
-          s = senders_[m.address()] =
-              driver_.connection().open_sender(m.address());
-        }
-        ENVOY_CONN_LOG(debug, "[amqp_client] sending request: {}", conn(), m);
+        proton::sender s = !!sender_ ? sender_ : getSender(m.address());
+        ENVOY_CONN_LOG(debug, "[amqp_client] sending request {}", conn(), m);
         auto tracker = s.send(m);
         trackers_[tracker] = cid;
       }
@@ -670,13 +697,13 @@ private:
     }
   };
 
-  std::string request_target_;   // FIXME aconway 2018-06-11: implement
   AmqpRequestBuilder request_;
   proton::receiver receiver_;
   bool receiver_ready_{false};
   uint64_t next_id_{0};
   std::map<uint64_t, Request> requests_;
   std::map<proton::tracker, uint64_t> trackers_;
+  proton::sender sender_;
 
   void sendHttpResponses() {
     // Send responses in request order
@@ -694,7 +721,8 @@ private:
 const std::string AmqpClient::NAME = FILTER_PREFIX + "amqp_client";
 
 template <class Filter>
-class Factory : public Common::FactoryBase<typename Filter::Config> {
+class Factory : public Common::FactoryBase<typename Filter::Config>,
+                protected Loggable {
   typedef typename Filter::Config Config;
 
 public:
@@ -712,8 +740,7 @@ public:
 
 private:
   Network::FilterFactoryCb createFilterFactoryFromProtoTyped(
-      const Config &config,
-      Server::Configuration::FactoryContext &) override {
+      const Config &config, Server::Configuration::FactoryContext &) override {
     return [=](Network::FilterManager &filter_manager) -> void {
       filter_manager.addFilter(std::make_shared<Filter>(config));
     };

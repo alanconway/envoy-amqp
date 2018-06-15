@@ -22,8 +22,7 @@ envoy_cc_library(
     repository = "@envoy",
     # external_deps = ["http_parser"],
     deps = [
-        "//api/v2:amqp_client_cc",
-        "//api/v2:amqp_server_cc",
+        "//api/v2:amqp_bridge_cc",
         "@envoy//include/envoy/buffer:buffer_interface",
         "@envoy//include/envoy/network:connection_interface",
         "@envoy//include/envoy/network:filter_interface",
@@ -44,19 +43,10 @@ envoy_cc_library(
 
 sh_test(
     # Test the amqp_server downstream filter
-    name = "test_server",
+    name = "integration_tests",
     srcs = ["run_test.sh"],
-    args = ["test_server.rb", "-v"],
-    data = [":envoy", "@proton//:ruby", "test_server.rb", "amqp_bridge.yaml"],
-    size = "small"
-)
-
-sh_test(
-    # Test the amqp_client upstream filter
-    name = "test_client",
-    srcs = ["run_test.sh"],
-    args = ["test_client.rb", "-v"],
-    data = [":envoy", "@proton//:ruby", "test_client.rb", "amqp_bridge.yaml"],
+    args = ["test_server.rb", "test_client.rb"],
+    data = [":envoy", "@proton//:ruby", "test_server.rb", "test_client.rb", "amqp_bridge.yaml"],
     size = "small"
 )
 

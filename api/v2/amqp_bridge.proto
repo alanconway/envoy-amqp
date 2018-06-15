@@ -1,0 +1,23 @@
+syntax = "proto3";
+
+package envoy.config.filter.network.amqp_bridge.v2;
+option go_package = "v2";
+
+import "validate/validate.proto";
+
+// [#protodoc-title: AMQP Bridge (client or server)]
+// AMQP Bridge :ref:`configuration overview <config_network_filters_amqp_bridge>`.
+
+message AmqpBridge {
+  // Optional AMQP relay address for requests.
+  //
+  // Useful to send/receive requests via an AMQP intermediary.
+  // A client bridge will send all requests via a link to this target address.
+  // A server bridge will subscribe to this source address for requests.
+  //
+  string request_relay = 1;
+
+  // Optional AMQP container-id.
+  // If not set a random UUID is generated.
+  string container_id = 2;
+}

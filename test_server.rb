@@ -48,11 +48,6 @@ class TestHTTPServer < WEBrick::HTTPServer
   def self.get() @@instance; end
 end
 
-# MessagingHandler that raises in on_error to catch unexpected errors
-class ExceptionMessagingHandler
-  def on_error(e) raise e; end
-end
-
 class Rejected < RuntimeError; end
 class Modified < RuntimeError; end
 class Released < RuntimeError; end
@@ -67,12 +62,13 @@ def raise_status(status)
   end
 end
 
-class TestAMQPClient < ExceptionMessagingHandler
+class TestAMQPClient
 
   def initialize(requests, opts={})
     @netaddr = opts[:netaddr] || ":18000"
     @linkaddr = opts[:linkaddr]
     @vhost = opts[:vhost]
+    @reply_to = opts[:reply_to]
     @requests = requests
     @responses = []
     raise "No requests" if requests.empty?
@@ -81,6 +77,8 @@ class TestAMQPClient < ExceptionMessagingHandler
 
   attr_reader :responses, :reply_to
 
+  def on_error(e) raise e; end
+ 
   def on_container_start(cont)
     c = cont.connect(@netaddr, { :virtual_host => @vhost })
     @sender = c.open_sender(@linkaddr)
@@ -89,7 +87,7 @@ class TestAMQPClient < ExceptionMessagingHandler
 
   def send_request
     req = @requests.shift
-    req.reply_to = @receiver.remote_source.address
+    req.reply_to = @reply_to || @receiver.remote_source.address
     @sender.send(req)
   end
 
@@ -232,6 +230,52 @@ class EnvoyAmqpServerTest < MiniTest::Test
   def test_body_types
     a = "/#{__method__}/"
     assert_equal "400 Bad Request", request(Message.new([:not_a_legal_body], { :address=>a, :subject=>"POST" })).subject
+  end
+
+  # Version of the test client that doesn't open a sender link, but allows it to open from remote.
+  class TestRequestLinkAMQPClient < TestAMQPClient
+    def initialize(requests, opts={})
+      opts[:netaddr] ||= ":18001"
+      super(requests, opts)
+    end
+
+    def on_container_start(cont)
+      c = cont.connect(@netaddr, { :virtual_host => @vhost })
+      # Don't open sender, it will be opened by the other end.
+      @receiver = c.open_receiver({:dynamic => true})
+    end
+
+    def on_sender_open(s)
+      @sender = s
+      send_request
+    end
+
+    def send_request
+      return unless @sender && @sender.open? && @receiver && @receiver.open?
+      req = @requests.shift
+      req.reply_to = @receiver.remote_source.address
+      @sender.send(req)
+    end
+
+    attr_reader :sender
+  end
+
+  def test_request_relay
+    a = "/#{__method__}/"
+    client = TestRequestLinkAMQPClient.new([Message.new("body", {:address=>a, :subject=>"POST"})])
+    res = client.responses[0]
+    assert_equal "200 OK", res.subject
+    assert_equal "response=body", res.body
+
+    l = client.sender
+    assert_equal "amqp_in2", l.connection.container_id
+    assert_equal "amqp_in2-link", l.remote_source.address
+  end
+
+  def test_bad_reply_to
+    a = "/#{__method__}/"
+    client = TestAMQPClient.new([Message.new("", {:address=>a, :subject=>"GET"})], {:reply_to=>"BAD"})
+    assert_equal Tracker::REJECTED, client.responses[0]
   end
 end
 

@@ -30,12 +30,13 @@ class TestAMQPServer
   def initialize
     @container = Container.new(self, "#{__FILE__}-#{Process.pid}")
     @requests = Queue.new       # Let tests examine the AMQP request converted from HTTP
+    @links = Queue.new
     @senders = {}
     @listener = @container.listen ":5672" # TODO aconway 2018-05-31: hard-coded in .yaml
     @thread = Thread.new { @container.run }
   end
 
-  attr_reader :requests
+  attr_reader :requests, :links
 
   def on_error(e) raise e; end
 
@@ -49,6 +50,7 @@ class TestAMQPServer
 
   def on_message(delivery, request)
     @requests << request
+    @links << delivery.receiver
     case request['outcome']
     when 'reject' then delivery.reject
     when 'release' then delivery.release({ :failed => false })
@@ -65,6 +67,11 @@ class TestAMQPServer
       response.correlation_id = request.correlation_id
       sender.send(response)
     end
+  end
+
+  def clear
+    @requests.clear
+    @links.clear
   end
 
   def stop
@@ -92,14 +99,14 @@ class EnvoyAmqpClientTest < MiniTest::Test
 
   def teardown()
     @http.finish
-    TestAMQPServer.get.requests.clear # Clear left-over requests
+    TestAMQPServer.get.clear
   end
 
   def server_pop() @server.requests.pop; end
 
   def test_get
-    res = @http.get(@a)
-    assert_equal ["200", @a], [res.code, res.body]
+    r = @http.get(@a)
+    assert_equal ["200", @a], [r.code, r.body]
     s = server_pop
     assert_equal [@a, "GET"], [s.address, s.subject]
     refute_nil s.reply_to
@@ -128,6 +135,15 @@ class EnvoyAmqpClientTest < MiniTest::Test
     assert_equal ["502", "Bad Gateway", "released"], [r.code, r.message, r.body]
     r = @http.post(@a, "foo", { 'outcome'=>'modify' })
     assert_equal ["502", "Bad Gateway", "modified"], [r.code, r.message, r.body]
+  end
+
+  def test_request_relay
+    @a = "/2/#{name}/"          # Use upstreadm 2 with target link config
+    r = @http.post(@a, "hello")
+    assert_equal ["200", @a], [r.code, r.body]
+    l = @server.links.pop
+    assert_equal "amqp_out2-link", l.target.address
+    assert_equal "amqp_out2", l.connection.container_id
   end
 end
 

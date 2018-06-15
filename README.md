@@ -101,7 +101,7 @@ or the AMQP virtual host if not.
 
 [host-header]: https://www.w3.org/Protocols/rfc2616/rfc2616-sec14.html#sec14.23
 
-### AMQP response from HTTP
+### AMQP Response from HTTP
 
 AMQP message properties:
 * `subject` = HTTP reason-phrase string, e.g. "OK" or "Bad Request"
@@ -128,6 +128,46 @@ HTTP status-code is taken from AMQP `subject`
 
 If an AMQP request is released, rejected or modified, the outcome becomes a HTTP
 response "502 Bad Gateway" with body string "released", "rejected" or "modified"
+
+## AMQP Links and Connections
+
+### Client
+
+The client creates AMQP links to send requests and receive responses.
+
+Request sender links are created to the first of the following targets that
+applies:
+- the `request_relay` address, if configured.
+- the anonymous target, if peer offers ANONYMOUS-RELAY capability.
+- the message 'to' address.
+
+Response receiver links are created from the first of the following sources that
+applies:
+- the `response_link` configuration entry, if not empty.
+- a dynamic source link, used for all responses.
+
+### Server
+
+The server offers the ANONYMOUS-RELAY capability and accepts any of the following links:
+- dynamic source links to send responses with matching reply-to.
+- named source links to send responses with matching reply-to.
+- named or anonymous target links to receive requests.
+
+The server can create the following links:
+- receiver from `request_relay` source if configured, to subscribe for requests.
+- sender to anonymous target, if peer offers ANONYMOUS-RELAY, to send responses.
+- *TODO* receiver for URIs known to Envoy, to advertise service availability.
+
+### AMQP Server Filter
+
+The server filter accepts incoming links to any target address, including the
+anonymous target, for incoming requests. HTTP requests are addressed as per the
+Mapping above.
+
+It accepts incoming *dynamic source* links to to be used when sending responses
+to a reply-to address.
+
+If the peer offers "ANONYMOUS-RELAY" capability, the server will *create* an anonymous-relay link and use it to send responses.
 
 ## Building and testing
 
