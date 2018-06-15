@@ -49,13 +49,17 @@
 
 #include <cctype>
 #include <deque>
+#include <iomanip>
+#include <sstream>
 
 namespace Envoy {
 namespace Extensions {
 namespace NetworkFilters {
 namespace Amqp {
 
-// tpyedef verbose proton::*_options classes
+namespace {
+
+// typedef verbose proton::*_options classes
 typedef proton::connection_options ConOpts;
 typedef proton::sender_options SndOpt;
 typedef proton::receiver_options RcvOpt;
@@ -71,10 +75,14 @@ const std::string COLON_SP = ": ";
 const std::string CRLF = "\r\n";
 const std::string HTTP_VERSION = "HTTP/1.1";
 const std::string POST = "POST";
+const std::string BAD_REQUEST = "400 Bad Request"; // Invalid request
+const std::string BAD_GATEWAY = "502 Bad Gateway"; // Invalid response
+
 const Http::LowerCaseString HOST{"host"};
 const Http::LowerCaseString CONTENT_LENGTH{"content-length"};
 const Http::LowerCaseString CONTENT_TYPE{"content-type"};
 const Http::LowerCaseString CONTENT_ENCODING{"content-encoding"};
+const Http::LowerCaseString TRANSFER_ENCODING{"transfer-encoding"};
 const Http::LowerCaseString TEXT_PLAIN_UTF8{"text/plain; charset=utf-8"};
 const Http::LowerCaseString APPLICATION_OCTET_STREAM{
     "application/octet-stream"};
@@ -82,16 +90,22 @@ const Http::LowerCaseString APPLICATION_OCTET_STREAM{
 const proton::symbol ANONYMOUS_RELAY = "ANONYMOUS-RELAY";
 const std::vector<proton::symbol> ANONYMOUS_RELAY_CAPABILITIES{ANONYMOUS_RELAY};
 
+// These headers are not copied to/from application-properties:
+// They are set as/computed from message-properties and body size.
 bool contentHeader(const Http::LowerCaseString &name) {
   return name == CONTENT_LENGTH || name == CONTENT_TYPE ||
-         name == CONTENT_ENCODING;
-}
-
-bool reservedHeader(const Http::LowerCaseString &name) {
-  return contentHeader(name) || name == HOST;
+         name == CONTENT_ENCODING || name == TRANSFER_ENCODING;
 }
 
 inline uint64_t min(uint64_t a, uint64_t b) { return (a < b) ? a : b; }
+
+// String summary of message for log output
+std::string log(const proton::message &m) {
+  // TODO aconway 2018-06-20: not very efficient, use LOG and fmt:: properly
+  std::ostringstream o;
+  o << m; // Limit size of long message bodies in logs
+  return o.str().substr(0, 512);
+}
 
 inline bool is_status_line(const std::string &s) {
   return (s.size() >= 3 && '1' <= s[0] && s[0] <= '5' && std::isdigit(s[1]) &&
@@ -122,36 +136,36 @@ public:
 // Convert AMQP messages to HTTP in a Buffer::Instance
 class HttpEncoder {
 public:
-  HttpEncoder(Buffer::Instance &http) : http_(http) {}
-
   // @throw EnvoyException
-  void request(const proton::delivery &d, const proton::message &m) {
+  Buffer::Instance &request(const proton::delivery &d,
+                            const proton::message &m) {
     std::string method = m.subject().empty() ? POST : m.subject();
-    std::string uri =
-        m.address().empty() ? d.receiver().target().address() : m.address();
+    std::string uri = m.to().empty() ? d.receiver().target().address() : m.to();
     std::string host = Uri(uri).host();
     if (host.empty())
       host = d.connection().virtual_host(); // Fallback to AMQP vhost
 
-    // Can't have any exceptions once we start writing to HTTP buffer, it may
-    // already have previous HTTP data in it.
     request_line(method, uri);
     header(HOST, host); // Required by HTTP/1.1
     message(m);
+    return http_;
   }
 
-  void response(const proton::message &m) {
+  Buffer::Instance &response(const proton::message &m) {
     response_line(m.subject());
     message(m);
+    return http_;
   }
 
 private:
   void request_line(const std::string &method, const std::string &uri) {
+    http_.drain(http_.length());
     for (const auto &s : {method, SP, uri, SP, HTTP_VERSION, CRLF})
       http_.add(s);
   }
 
   void response_line(const std::string &s) {
+    http_.drain(http_.length());
     std::string rl =
         is_status_line(s) ? s : (s.empty() ? "200 OK" : "200 " + s);
     for (const auto &s : {HTTP_VERSION, SP, rl, CRLF}) {
@@ -167,62 +181,65 @@ private:
 
   void header(const std::pair<std::string, proton::scalar> &kv) {
     Http::LowerCaseString name(kv.first);
-    if (!reservedHeader(name) && kv.second.type() == proton::STRING) {
+    if (!contentHeader(name) && kv.second.type() == proton::STRING) {
       header(name, proton::get<std::string>(kv.second));
     }
   }
 
+  // TODO aconway 2018-06-20: there is a LOT of copying in message
+  // encoding/decoding
+
   // Common headers and body
   void message(const proton::message &m) {
-    std::string default_type;
-
-    // Figure out what kind of body we have
-    switch (m.body().type()) {
-
-    case proton::NULL_TYPE:
-      break; // No body
-    case proton::STRING:
-      proton::get<std::string>(m.body(), content_);
-      default_type = TEXT_PLAIN_UTF8.get();
-      break;
-
-    case proton::BINARY:
-      proton::coerce<std::string>(m.body(), content_);
-      if (!m.inferred()) { // An AMQP binary value, set the content type
-        default_type = APPLICATION_OCTET_STREAM.get();
-      } // Otherwise this is a data section, respect m.content_type even if
-        // empty
-      break;
-
-    default:
-      throw EnvoyException("'" + proton::type_name(m.body().type()) +
-                           "' message-body type is not allowed");
-      break;
-    }
-
-    std::map<std::string, proton::scalar> properties;
-    proton::get(m.properties().value(), properties);
-    for (const auto &kv : properties) {
-      header(kv);
-    }
-
+    // Do content-related headers first
+    content_type_ = m.content_type();
     if (m.body().empty()) {
-      http_.add(CRLF);
-    } else {
-      header(CONTENT_TYPE,
-             (m.content_type().empty() ? default_type : m.content_type()));
-      if (m.content_encoding().empty()) {
-        header(CONTENT_LENGTH, std::to_string(content_.size()));
-      } else {
+      content_.clear();
+    } else { // Not empty
+      switch (m.body().type()) {
+      case proton::STRING:
+        if (content_type_.empty()) { // AMQP string value
+          content_type_ = TEXT_PLAIN_UTF8.get();
+        }
+        break;
+      case proton::BINARY:
+        // Set default content-type for an AMQP binary value,
+        // but for a binary data section respect m.content_type even if it is
+        // empty.
+        if (content_type_.empty() && !m.inferred()) {
+          content_type_ = APPLICATION_OCTET_STREAM.get();
+        }
+        break;
+
+      default:
+        throw EnvoyException("'" + proton::type_name(m.body().type()) +
+                             "' message-body type is not allowed");
+      }
+      proton::coerce<std::string>(m.body(), content_);
+      if (!content_type_.empty()) {
+        header(CONTENT_TYPE, content_type_);
+      }
+      if (!m.content_encoding().empty()) {
         header(CONTENT_ENCODING, m.content_encoding());
       }
-      http_.add(CRLF); // Header/body separator
-      http_.add(content_);
+      if (!content_.empty()) {
+        header(CONTENT_LENGTH, std::to_string(content_.size()));
+      }
     }
+    // Now the remaining properties
+    proton::get(m.properties().value(), properties_);
+    for (const auto &kv : properties_) {
+      header(kv);
+    }
+    http_.add(CRLF);     // Header/body separator
+    http_.add(content_); // body
   }
 
-  Buffer::Instance &http_;
-  std::string content_; // Allow std::string to re-use memory
+  // Re-use these variables, they will cache some memory between use and
+  // reduce allocations.
+  Buffer::OwnedImpl http_;
+  std::string content_, content_type_;
+  std::map<std::string, proton::scalar> properties_;
 };
 
 // Parse HTTP and build an AMQP message.
@@ -385,6 +402,8 @@ const http_parser_settings AmqpBuilder::settings_ = {
     .on_chunk_header = nullptr,
     .on_chunk_complete = nullptr};
 
+} // namespace
+
 // Shortcuts for logging with filter name in AmqpBridge subclasses.
 #define LOG(LEVEL, FORMAT, ...)                                                \
   ENVOY_LOG(LEVEL, "[{}] " FORMAT, name_, ##__VA_ARGS__)
@@ -415,15 +434,15 @@ public:
         .offered_capabilities(ANONYMOUS_RELAY_CAPABILITIES);
   }
 
-  // == Envoy Network::Filter callbacks
+  // == Network::Filter callbacks
 
   void
   initializeReadFilterCallbacks(Network::ReadFilterCallbacks &cb) override {
     read_callbacks_ = &cb;
+    conn().enableHalfClose(true);
   }
 
   Network::FilterStatus onNewConnection() override {
-    conn().enableHalfClose(true);
     return Network::FilterStatus::Continue;
   }
 
@@ -442,21 +461,28 @@ public:
   // Replace HTTP data with AMQP data
   Network::FilterStatus onWrite(Buffer::Instance &data,
                                 bool end_stream) override {
+    ASSERT(http_out_.length() == 0);
     http_in_.move(data);
     process(false, end_stream);
-    data.move(amqp_out_); // Replace with AMQP data
+    data.move(amqp_out_);            // Replace with AMQP data
+    ASSERT(http_out_.length() == 0); // Should not generate HTTP data here.
     return Network::FilterStatus::Continue;
   }
 
   // == proton::messaging_handler callbacks
+
+  void on_error(const proton::error_condition &e) override {
+    CONN_LOG(debug, "unexpected AMQP error: {}", e);
+    driver_.connection().close(e);
+  }
 
   void on_connection_open(proton::connection &c) override {
     // Check for anonymous relay
     const std::vector<proton::symbol> &cap = c.offered_capabilities();
     offers_relay_ =
         std::find(cap.begin(), cap.end(), ANONYMOUS_RELAY) != cap.end();
-    CONN_LOG(debug, "peer container \"{}\"{}", c.container_id(),
-             (offers_relay_ ? " offers ANONYMOUS-RELAY" : ""));
+    CONN_LOG(debug, "connected to peer container-id=\"{}\"{}", c.container_id(),
+             (offers_relay_ ? " (offers ANONYMOUS-RELAY)" : ""));
     c.open(connection_opts_);
   }
 
@@ -465,9 +491,31 @@ protected:
   const std::string request_relay_;
   proton::connection_options connection_opts_;
   proton::io::connection_driver driver_;
-  Buffer::OwnedImpl amqp_in_, amqp_out_, http_in_, http_out_, empty_;
 
+  // TODO aconway 2018-06-25: review flow control
+  //
+  // These buffers are not explicitly bounded, but they are limited by what can
+  // be produced from a single read or write event on the underlying Envoy
+  // connection. Review whether additional flow control measures are needed.
+  //
+  Buffer::OwnedImpl amqp_in_, amqp_out_, http_in_, http_out_, empty_;
+  HttpEncoder http_encoder_;
+
+  // Read as much of http_in_ as possible (there may be partial data left
+  // unread) and generate AMQP events.
+  //
+  // Client/server implement this differently to parse HTTP requests/responses
   virtual void processHttp(bool end_http) PURE;
+
+  proton::message makeErrorResponse(const proton::message_id &cid,
+                                    const std::string &subject,
+                                    const std::string &description) {
+    proton::message res;
+    res.correlation_id(cid);
+    res.subject(subject);
+    res.body(description);
+    return res;
+  }
 
   Network::Connection &conn() { return read_callbacks_->connection(); }
 
@@ -479,22 +527,41 @@ protected:
     return anonymous_relay_;
   }
 
-  void processHttpNoThrow(bool end_http) {
+  // Process available HTTP data and AMQP data and AMQP events.
+  // @param end_amqp: the AMQP-in stream (connection read stream) has ended
+  // @param end_http: the HTTP-in stream (connection write stream) has ended
+  void process(bool end_amqp, bool end_http) {
     try {
-      processHttp(end_http);
+      processHttp(end_http); // Read http_in_, generate AMQP events
+      do {
+        processAmqp(); // Read amqp_in_, dispatch events, write amqp_out_
+        if (end_http && !http_in_.length()) {
+          // Write side locally closed, no more HTTP coming - do polite AMQP
+          // protocol close.
+          CONN_LOG(debug, "No more HTTP data, closing AMQP connection");
+          driver_.connection().close();
+        }
+        if (end_amqp && !amqp_in_.length()) {
+          // Read side remotely closed, inform the driver to run final events.
+          driver_.read_close();
+        }
+        processHttp(end_http); // AMQP processing may unblock HTTP processing
+        // close() calls or processHttp() can generate more events.
+      } while (driver_.has_events());
     } catch (const std::exception &e) {
-      driver_.connection().close(
-          proton::error_condition("amqp:internal-error", e.what()));
-      driver_.write_close();
-    }
-    if (end_http) {
-      driver_.connection().close();
-      driver_.write_close();
+      // Disaster, slam the Envoy connection shut, throw away everything.
+      CONN_LOG(error, "unexpected error: {}", e.what());
+      conn().close(Network::ConnectionCloseType::NoFlush);
     }
   }
 
-  void process(bool end_amqp, bool end_http) {
-    do { // AMQP event loop
+  // Read AMQP data from the amqp_in_ buffer, dispatch events,
+  // write to the amqp_out_ buffer. Continue till amqp_in_ is empty
+  // or driver is finished.
+  //
+  void processAmqp() {
+    bool running = driver_.dispatch();
+    while (running && (driver_.write_buffer().size || amqp_in_.length())) {
       auto wbuf = driver_.write_buffer();
       if (wbuf.size) {
         amqp_out_.add(wbuf.data, wbuf.size);
@@ -507,11 +574,8 @@ protected:
         amqp_in_.drain(rsize);
         driver_.read_done(rsize);
       }
-      if (end_amqp) {
-        driver_.read_close();
-      }
-      processHttpNoThrow(end_http);
-    } while (driver_.has_events() && driver_.dispatch());
+      running = driver_.dispatch();
+    }
   }
 
 private:
@@ -532,46 +596,57 @@ private:
 class AmqpServer : public AmqpBridge {
 public:
   static const std::string NAME;
+  // TODO aconway 2018-06-25: can Envoy support for pipelining with credit > 1?
+  static const proton::receiver_options RECEIVER_OPTS;
 
   AmqpServer(const Config &config) : AmqpBridge(NAME, config) {
     driver_.accept(connection_opts_);
     if (!request_relay_.empty()) {
-      receiver_ = driver_.connection().open_receiver(request_relay_);
+      // Explicit credit control
+      receiver_ =
+          driver_.connection().open_receiver(request_relay_, RECEIVER_OPTS);
     }
   }
 
   // == proton::messaging_handler overrides
 
   void on_sender_open(proton::sender &s) override {
-    if (!s.active() && s.source().dynamic()) {
-      std::string addr = s.connection().container_id() + "/" + s.name();
+    if (!s.active()) { // Not already open
+      // Subscriptions to reply-to source addresses, dynamic and named.
+      std::string addr = s.source().dynamic()
+                             ? s.connection().container_id() + "/" + s.name()
+                             : s.source().address();
+      senders_[addr] = s;
       s.open(SndOpt().source((SrcOpt().address(addr))));
-      sources_[addr] = s;
+    }
+  }
+
+  void on_receiver_open(proton::receiver &r) override {
+    // FIXME aconway 2018-06-25: more than one receiver will cause pipelining.
+    if (!r.active()) {
+      r.open(RECEIVER_OPTS);
     }
   }
 
   void on_sender_close(proton::sender &s) override {
-    sources_.erase(s.source().address());
+    senders_.erase(s.source().address());
   };
 
   // AMQP request message
   void on_message(proton::delivery &d, proton::message &m) override {
-    CONN_LOG(debug, "received request: {}", m);
+    CONN_LOG(debug, "received request: {}", log(m));
     proton::sender s = findSender(m.reply_to());
     if (!s) {
-      CONN_LOG(error, "unknown reply_to address: {}", m);
-      d.reject(); // Can't send a response
+      CONN_LOG(error, "unknown reply_to address: {}", log(m));
+      d.reject();
       return;
     }
-    requests_.push_back(Request(d, m, s));
-    d.accept(); // We will send a response (may be an error)
     try {
-      HttpEncoder(http_out_).request(d, m); // Forward HTTP request
+      http_out_.move(http_encoder_.request(d, m)); // Forward HTTP request
+      requests_.push_back(Request(d, m, s));
     } catch (const std::exception &e) {
-      CONN_LOG(error, "bad request: {}: {}", e.what(), m);
-      proton::message m(e.what());
-      m.subject("400 Bad Request");
-      sendResponse(m);
+      CONN_LOG(error, "request encoding error: {}", e.what());
+      d.reject();
     }
   }
 
@@ -579,23 +654,13 @@ protected:
   // TODO aconway 2018-06-04: make outgoing links? Good for dispatch, rude for
   // normal clients.
 
-  // HTTP response to AMQP response
+  // Parse all available HTTP responses, generate AMQP responses
   void processHttp(bool end_http) {
     while (response_.parse(http_in_, end_http)) {
       if (requests_.empty()) {
-        CONN_LOG(error, "unexpected response: {}", response_.message());
+        CONN_LOG(error, "unexpected response: {}", log(response_.message()));
       } else {
-        int code = response_.code();
-        std::string status = response_.status();
-        int type = code / 100;
-        switch (type) {
-        case 1: // Informational
-        case 3: // Redirect
-          CONN_LOG(debug, "ignoring response: {} {}", code, status);
-          continue;
-        }
-        auto res = response_.message();
-        sendResponse(res);
+        sendResponse(response_.message());
       }
     }
   }
@@ -607,7 +672,9 @@ protected:
     auto correlation = req.message.correlation_id();
     if (!correlation.empty())
       res.correlation_id(correlation);
-    CONN_LOG(debug, "sending response: {}", res);
+    CONN_LOG(debug, "sending response: {}", log(res));
+    req.delivery.accept(); // Ack delayed till HTTP processing complete.
+    // FIXME aconway 2018-06-25: queues in excess of credit, flow control
     req.sender.send(res);
   }
 
@@ -623,11 +690,13 @@ private:
   std::deque<Request> requests_;
   AmqpResponseBuilder response_;
   proton::receiver receiver_;
-  std::unordered_map<std::string, proton::sender> sources_;
+  std::unordered_map<std::string, proton::sender> senders_;
 
   proton::sender findSender(const std::string &reply_to) {
-    auto i = sources_.find(reply_to);
-    if (i != sources_.end()) {
+    // Server does not create spontaneous sender links,
+    // this would be surprising to pure clients.
+    auto i = senders_.find(reply_to);
+    if (i != senders_.end()) {
       return i->second;
     } else {
       return anonymous_relay();
@@ -636,8 +705,16 @@ private:
 };
 
 const std::string AmqpServer::NAME = "amqp_server";
+const proton::receiver_options AmqpServer::RECEIVER_OPTS{
+    RcvOpt().auto_accept(false).credit_window(1)};
 
 /// Filter for incoming connections from AMQP request/response clients.
+/// - creates a single unique (dynamic) reply address
+/// - correlates and orders AMQP responses messages using integer
+/// correlation-ids
+/// - sends HTTP responses in request order, even if AMQP responses are out of
+/// order
+///
 class AmqpClient : public AmqpBridge {
 public:
   static const std::string NAME;
@@ -655,16 +732,14 @@ public:
 
   void on_receiver_open(proton::receiver &r) override {
     if (r == receiver_) {
-      CONN_LOG(debug, "dynamic reply_to address: {}", r.source().address());
+      CONN_LOG(debug, "dynamic reply_to address: '{}'", r.source().address());
       receiver_ready_ = true;
-      processHttpNoThrow(
-          false); // Process any backlog while waiting for receiver
     }
   }
 
   // AMQP response message
   void on_message(proton::delivery &, proton::message &m) override {
-    sendResponse(m);
+    recordResponse(std::move(m));
   }
 
   // AMQP failed outcome is converted a response message
@@ -672,61 +747,42 @@ public:
     auto i = trackers_.find(t);
     if (i != trackers_.end()) {
       if (t.state() != proton::transfer::ACCEPTED) {
-        proton::message m(proton::to_string(t.state()));
-        m.correlation_id(i->second);
-        m.subject("502 Bad Gateway - " + proton::to_string(t.state()));
-        sendResponse(m);
+        auto s =
+            fmt::format("Bad AMQP outcome: {}", proton::to_string(t.state()));
+        CONN_LOG(error, "{}", s);
+        recordResponse(makeErrorResponse(i->second, BAD_GATEWAY, s));
       }
       trackers_.erase(i);
     }
   }
 
 protected:
-  void sendResponse(proton::message &m) {
-    if (proton::type_id_is_integral(m.correlation_id().type())) {
-      auto i = requests_.find(proton::coerce<uint64_t>(m.correlation_id()));
-      if (i != requests_.end()) {
-        i->second.respond(std::move(m));
-        sendHttpResponses();
-        return;
-      }
-      CONN_LOG(error, "received response with bad correlation-id: {}", m);
-    }
-  }
-
+  // Parse all available HTTP requests, generate AMQP requests
   void processHttp(bool end_http) {
     if (receiver_ready_) { // Wait till we have a reply_to address
       while (request_.parse(http_in_, end_http)) {
-        auto cid = next_id_++;
         proton::message &m = request_.message();
-        requests_[cid]; // Create a slot for the request
+        auto cid = next_id_++;
         m.correlation_id(cid);
         m.reply_to(receiver_.source().address());
+        responses_[cid]; // Create a slot for the response
         proton::sender s = getSender(m.address());
-        CONN_LOG(debug, "sending request: {}", m);
-        auto tracker = s.send(m);
-        trackers_[tracker] = cid;
+        CONN_LOG(debug, "sending request: {}", log(m));
+        // FIXME aconway 2018-06-25: flow control, queues messages in excess of
+        // credit.
+        trackers_[s.send(m)] = cid;
       }
     }
   }
 
 private:
-  struct Request {
-    proton::message response;
-    bool ready{false};
-
-    void respond(proton::message &&m) {
-      response = m;
-      ready = true;
-    }
-  };
-
+  typedef uint64_t CorrelationId;
   AmqpRequestBuilder request_;
   proton::receiver receiver_;
   bool receiver_ready_{false};
-  uint64_t next_id_{0};
-  std::map<uint64_t, Request> requests_;
-  std::map<proton::tracker, uint64_t> trackers_;
+  CorrelationId next_id_{1};
+  std::map<CorrelationId, proton::message> responses_;
+  std::map<proton::tracker, CorrelationId> trackers_;
   std::unordered_map<std::string, proton::sender> targets_;
   proton::sender named_relay_;
 
@@ -734,9 +790,8 @@ private:
     if (named_relay_) {
       return named_relay_;
     }
-    auto anon = anonymous_relay();
-    if (anon) {
-      return anon;
+    if (anonymous_relay()) {
+      return anonymous_relay();
     }
     auto &s = targets_[target];
     if (!s) {
@@ -745,15 +800,40 @@ private:
     return s;
   }
 
-  void sendHttpResponses() {
-    // Send responses in request order
-    auto i = requests_.begin();
-    for (; i != requests_.end() && i->second.ready; ++i) {
-      Request &r = i->second;
-      CONN_LOG(debug, "sending response: {}", r.response);
-      HttpEncoder(http_out_).response(i->second.response);
+  bool validResponse(const proton::message &m) {
+    return proton::type_id_is_integral(m.correlation_id().type());
+  }
+
+  void recordResponse(proton::message &&m) {
+    if (validResponse(m)) {
+      auto i =
+          responses_.find(proton::coerce<CorrelationId>(m.correlation_id()));
+      if (i != responses_.end() && !validResponse(i->second)) {
+        CONN_LOG(debug, "received response: {}", log(m));
+        i->second = m;
+        sendHttpResponses();
+        return;
+      }
     }
-    requests_.erase(requests_.begin(), i);
+    CONN_LOG(error, "received response with bad correlation-id {}: {}",
+             m.correlation_id(), log(m));
+  }
+
+  void sendHttpResponses() {
+    // Note: correlation IDs are integers so map order is also request order.
+    auto i = responses_.begin();
+    for (; i != responses_.end() && validResponse(i->second); ++i) {
+      proton::message &m = i->second;
+      try {
+        http_out_.add(http_encoder_.response(m));
+      } catch (const std::exception &e) {
+        auto s = fmt::format("response encoding error: {}: ", e.what());
+        CONN_LOG(error, "{}: {}", s, log(m));
+        auto m2 = makeErrorResponse(m.correlation_id(), BAD_GATEWAY, s);
+        http_out_.add(http_encoder_.response(m2));
+      }
+    }
+    responses_.erase(responses_.begin(), i);
   }
 };
 

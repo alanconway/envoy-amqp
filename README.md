@@ -172,13 +172,13 @@ Runs ruby test client/server envoy with the bridge.
 # Things to do
 
 ## Internal cleanup
-Minor fixes and missing features of the bridge:
-- [ ] FIXME and TODO comments
+Fixes and missing features of the bridge:
 - [ ] Timers and heartbeats
+- [ ] Robust HTTP 1.1 and HTTP 2 handling - use Envoy's codec
+- [ ] Performance: pipelining/multiplexing at amqp_server end.
 - [ ] Error information on reject/modify dispositions
-- [ ] Configuration of hard-coded values: credit window, container-id etc.
-- [ ] Flow control: use AMQP credit and/or Envoy watermark buffers to apply back-pressure
-- [ ] Use Envoy's HTTP codec - maturity, support for HTTP2
+- [ ] Flow control review: AMQP credit and Envoy watermark buffers.
+
 Testing
 - [ ] Automated unit and integration tests under bazel
 - [ ] Multi-host tests in more realistic setting (including dispatch, kubernetes etc.)

@@ -192,12 +192,10 @@ class EnvoyAmqpServerTest < MiniTest::Test
 
     m.subject = "GET"
     m.address = "!@#!@!bad_uri"
-    res = request(m)
-    assert_equal ["400 Bad Request", 42], [res.subject, res.correlation_id], res
+    assert_raises(Rejected) { request(m) }
 
     m.address = ""
-    res = request(m)
-    assert_equal ["400 Bad Request", 42], [res.subject, res.correlation_id], res
+    assert_raises(Rejected) { request(m) }
 
     # Errors returned by the HTTP server
     m.address = a
@@ -229,7 +227,7 @@ class EnvoyAmqpServerTest < MiniTest::Test
 
   def test_body_types
     a = "/#{__method__}/"
-    assert_equal "400 Bad Request", request(Message.new([:not_a_legal_body], { :address=>a, :subject=>"POST" })).subject
+    assert_raises(Rejected) { request(Message.new([:not_a_legal_body], { :address=>a, :subject=>"POST" })) }
   end
 
   # Version of the test client that doesn't open a sender link, but allows it to open from remote.
