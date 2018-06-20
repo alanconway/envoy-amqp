@@ -45,7 +45,7 @@ sh_test(
     # Test the amqp_server downstream filter
     name = "integration_tests",
     srcs = ["run_test.sh"],
-    args = ["test_server.rb", "test_client.rb"],
+    args = ["test_client.rb", "test_server.rb"],
     data = [":envoy", "@proton//:ruby", "test_server.rb", "test_client.rb", "amqp_bridge.yaml"],
     size = "small"
 )

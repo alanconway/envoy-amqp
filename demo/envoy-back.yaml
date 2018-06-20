@@ -1,0 +1,44 @@
+
+# Envoy proxy forwarding AMQP messages from dispatch to HTTP services
+
+static_resources:
+  # This is an AMQP listener on port 15672
+  listeners:
+  - name: amqp_in
+    address: { socket_address: { address: 0.0.0.0, port_value: 15672 } }
+    filter_chains:
+    - filters:
+        # The AMQP server filter
+      - name: envoy.filters.network.amqp_server
+        config:
+          bridge:
+            sources: ["http-relay"] # Receiving link for requests
+            anonymous_relay: true   # Send responses by anon-relay
+      - name: envoy.http_connection_manager
+        config:
+          route_config:
+            # Envoy routing rules
+            virtual_hosts:
+            - name: default
+              domains: ["*"]
+              routes:
+              - match: { prefix: "/alanconway" }
+                route: { cluster: github, auto_host_rewrite: true }
+          http_filters:
+          - name: envoy.router
+          stat_prefix: amqp_in
+
+  clusters:
+
+  - name: github
+    connect_timeout: 0.25s
+    dns_lookup_family: v4_only
+    type: logical_dns
+    hosts: [{ socket_address: { address: github.com, port_value: 443 }}]
+    tls_context: { }
+
+# Envoy boilerplate
+admin:
+  access_log_path: /tmp/envoy-back-access.log
+  address:
+    socket_address: { address: 127.0.0.1, port_value: 9902 }

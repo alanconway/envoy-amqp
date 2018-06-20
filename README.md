@@ -20,32 +20,29 @@ but only the AMQP request/response pattern is in scope here.
 [Qpid Dispatch]: http://qpid.apache.org/components/dispatch-router
 [Qpid Proton C++]: http://qpid.apache.org/releases/qpid-proton-0.23.0/proton/cpp/api/index.html
 
-## Implementation
+## Design
 
-Envoy `Network::Filter` classes convert between AMQP messages (body and
-application-properties) to HTTP messages (body and headers). They also preserve
-the request/response relationship: HTTP expects responses in request order; AMQP
-uses a correlation-id to match out-of-order responses to requests.
+A pair of Envoy `Network::Filter` classes convert between AMQP messages (body
+and application-properties) and HTTP messages (body and headers), and preserve
+request/response correlation.
 
-Currently there are 2 filters:
+The **amqp_server** filter is configured on an Envoy listener to make it act
+like an AMQP server. AMQP client requests are translated to HTTP and forwarded
+to Envoy's HTTP connection manager, exactly as if they had come from an HTTP
+client. HTTP responses are translated and correlated back to AMQP using the
+standard `correlation_id` and `reply_to` properties.
 
-- `amqp_server`: configured on an Envoy `listener` to make it act as an AMQP
-  server connection. AMQP requests are translated and forwarded to the Envoy
-  HTTP router, HTTP responses are translated back to correlated AMQP responses
-  and sent to the original request's `reply_to` address.
+The **amqp_client** filter is configured on an Envoy cluster (upstream
+connection pool) to make it's connections act as AMQP client
+connections. Outbound HTTP requests are translated to AMQP, the AMQP responses
+are correlated and returned as HTTP responses.
 
-- `amqp_client`: configured on an Envoy `cluster` to make it's connections act
-  as AMQP client connections. Outbound HTTP requests are translated to AMQP, the
-  AMQP responses are correlated and returned in order as HTTP responses.
-
-Some parts of the AMQP protocol (links, flow control, settlement, heartbeats
-etc.) are handled by the filter and not reflected in the HTTP
-conversation. Likewise some HTTP non-terminal responses (redirects,
-informational responses, etc.) are not reflected in AMQP.
+The AMQP filters focus only on bridging between HTTP and AMQP, and managing AMQP
+links. Envoy's built-in HTTP router provides rich routing and manipulation of
+HTTP requests and responses, all of which can be used with bridged AMQP messages.
 
 ## Mapping
 
-<a name="message"></a>
 ### Message Body
 
 An AMQP message body [consists of one of the following three choices: one or more data sections, one or more amqp-sequence sections, or a single amqp-value section.][message-format]
@@ -54,34 +51,27 @@ A HTTP message body corresponds to an AMQP message with a single `data`
 section. The HTTP Content-Type and Content-Encoding headers corresponds to
 equivalent AMQP message properties.
 
-If an AMQP message has multiple data sections, only the first is used, the rest are ignored.
+If an AMQP message has multiple data sections, only the first is used, the rest
+are ignored.
 
-An AMQP messsage with a `value` section is allowed if the value has one of the following types:
-- string: default to `Content-Type: text/plain; charset=utf-8`
-- binary: default to `Content-Type: application/octet-stream`
+An AMQP messsage with a `value` section is allowed if the value has one of the
+following types:
+- string: HTTP Content-Type defaults to `text/plain; charset=utf-8`
+- binary: HTTP Content-Type defaults to `application/octet-stream`
 
-Although the AMQP spec states ["When using an application-data section with a section code other than data, content-type SHOULD NOT be set"][message-props], the AMQP `content-type` will be respected if it is set.
+If the AMQP content-type is set it will be used in favour of the defaults above.
 
-Requests with other AMQP bodies (sequence sections, or value sections other than the types above) will receive get a "400 Bad Request" response.
+Requests with other AMQP body types (sequence sections or value sections other than the types above) will rejected via the AMQP message disposition.
 
 [message-props]: http://docs.oasis-open.org/amqp/core/v1.0/os/amqp-core-messaging-v1.0-os.html#type-properties
 [message-format]: http://docs.oasis-open.org/amqp/core/v1.0/os/amqp-core-messaging-v1.0-os.html#section-message-format
 
 ### Headers and Application-Properties
 
-HTTP headers correspond to AMQP application-properties with string values,
-AMQP application-properties with non-string values are ignored.
-
-HTTP header names are case-insensitive, an AMQP request must not have properties
-with names that differ only in case.
-
-The following case-insensitive names are set automatically as headers by the bridge. They will be ignored if they occur as keys in the AMQP application-properties map:
-
-- "Content-Type"
-- "Content-Encoding"
-- "Content-Length"
-- "Host"
-- "Status"
+HTTP headers correspond to AMQP application-properties with string values, AMQP
+application-properties with non-string values are ignored.  HTTP header names
+are case-insensitive, AMQP application-property keys taken from HTTP headers are
+always lower-case.
 
 ### AMQP Request to HTTP
 
@@ -89,14 +79,11 @@ The AMQP request:
 * must have a `reply_to` address for the AMQP response.
 * may have a `correlation_id`, if so it will be copied to the AMQP response.
 
-The HTTP request line is formed as follows:
-* Method = AMQP `subject`
-* URI = the first of the following that is not empty:
-  * AMQP `to` message property
-  * Target address of the link the message arrived on
-  * "/"
+The HTTP request line is formed from an AMQP message as follows:
+* Method = `subject`
+* URI = `to` message property if set, link `target` address if not.
 
-The HTTP [Host][host-header] header is set from the URI, if it has a host part,
+The HTTP [Host][host-header] header is set from the URI if it has a host part,
 or the AMQP virtual host if not.
 
 [host-header]: https://www.w3.org/Protocols/rfc2616/rfc2616-sec14.html#sec14.23
@@ -104,19 +91,15 @@ or the AMQP virtual host if not.
 ### AMQP Response from HTTP
 
 AMQP message properties:
-* `subject` = HTTP reason-phrase string, e.g. "OK" or "Bad Request"
+* `subject` = HTTP status code and reason e.g. "200 OK", "400 Bad Request"
 * `to` = `reply-to` address from the original AMQP request
 * `correlation_id` = `correlation_id` from the original AMQP request if present
-* `application-property["status"]` = string, e.g. "200", "404"
-
-Non-terminal HTTP responses (1xx Information and 3xx Redirect) are handled by
-the bridge, the are not visible to the AMQP side of the connection.
 
 ### HTTP request to AMQP
 
 AMQP message properties:
-* `subject` = HTTP Method
-* `to` = HTTP URI
+* `subject` = HTTP Method, e.g. "GET", "POST"
+* `to` = HTTP URI (with authority or path only)
 * `correlation_id` = generated by the bridge
 * `reply_to` = generated by the bridge
 
@@ -131,72 +114,65 @@ response "502 Bad Gateway" with body string "released", "rejected" or "modified"
 
 ## AMQP Links and Connections
 
-### Client
+Both client and server can be configured to send requests/responses via the AMQP
+ANONYMOUS-RELAY (if available) and/or a named relay address.
 
-The client creates AMQP links to send requests and receive responses.
+If not configured to relay, the client will automatically create sending links
+with the request `to` address as target.
 
-Request sender links are created to the first of the following targets that
-applies:
-- the `request_relay` address, if configured.
-- the anonymous target, if peer offers ANONYMOUS-RELAY capability.
-- the message 'to' address.
+The server accepts named links and dynamic-source links for use as reply-to
+addresses, and offers ANONYMOUS-RELAY capability for incoming requests.
+The server can also automatically create sending links if configured to do so.
 
-Response receiver links are created from the first of the following sources that
-applies:
-- the `response_link` configuration entry, if not empty.
-- a dynamic source link, used for all responses.
-
-### Server
-
-The server offers the ANONYMOUS-RELAY capability and accepts any of the following links:
-- dynamic source links to send responses with matching reply-to.
-- named source links to send responses with matching reply-to.
-- named or anonymous target links to receive requests.
-
-The server can create the following links:
-- receiver from `request_relay` source if configured, to subscribe for requests.
-- sender to anonymous target, if peer offers ANONYMOUS-RELAY, to send responses.
-- *TODO* receiver for URIs known to Envoy, to advertise service availability.
+Both client and server can be configured to create a fixed set of named sending
+and receiving links; to advertise addresses, set up named relays etc.
 
 ## Building and testing
 
-*TODO instructions - using static proton build*
-*TODO Need proper automated tests*
+You need all the requirements to build Envoy, see https://www.envoyproxy.io
+
+You need to build proton manually *TODO add bazel genrule*
+
+    cd proton/bld && cmake -DCMAKE_INSTALL_PREFIX=install -DBUILD_STATIC_LIBS=YES -DSSL_IMPL=none .. && make install
+
+Build the AMQP filters statically linked into envoy with:
+
+    bazel build
+
+There are rather rough system tests implemented in ruby, run them with:
 
     bazel test ...
 
-Runs ruby test client/server envoy with the bridge.
-
-
-<a name="todo"></a>
 # Things to do
 
-## Internal cleanup
+## Cleanup and complete
+
 Fixes and missing features of the bridge:
-- [ ] Timers and heartbeats
-- [ ] Robust HTTP 1.1 and HTTP 2 handling - use Envoy's codec
-- [ ] Performance: pipelining/multiplexing at amqp_server end.
+- [ ] Implement heartbeats
+- [ ] Use Envoy codec for better HTTP 1.1, and HTTP 2 support.
 - [ ] Error information on reject/modify dispositions
-- [ ] Flow control review: AMQP credit and Envoy watermark buffers.
+- [ ] Set AMQP host from HTTP host for multi-tenancy
+- [ ] Performance and stability: pipelining/multiplexing issues.
+- [ ] Redirect proton logs to Envoy trace logs.
 
 Testing
 - [ ] Automated unit and integration tests under bazel
 - [ ] Multi-host tests in more realistic setting (including dispatch, kubernetes etc.)
-- [ ] redirect proton logs to Envoy trace logs.
-- [ ] test all HTTP methods, not just GET and POST
+- [ ] Test all HTTP methods, not just GET and POST
 
 Fixes to Envoy
-- [ ] Submit envoy upstream filter extensions (https://github.com/envoyproxy/envoy/issues/173)
-- [ ] Network filter callback for downstream write (https://github.com/envoyproxy/envoy/issues/3343)
-- [ ] Envoy to load shared modules (https://github.com/envoyproxy/envoy/issues/2053)
+- [ ] Submit upstream filter extensions (https://github.com/envoyproxy/envoy/issues/173)
+- [ ] Callback for downstream write (https://github.com/envoyproxy/envoy/issues/3343)
+- [ ] Load shared modules (https://github.com/envoyproxy/envoy/issues/2053)
 
 ## Missing features
 
-*flexible link configuration*: server to subscribe to multiple named addresses in a router.
+*service advertisement*: automatically reflect Envoy service configuration/discovery as AMQP links.
 
-*service advertisement*: server to reflect Envoy service configuration/discovery automatically as links to a router.
+*inverted server*: put an amqp_server bridge on an *outgoing* envoy connection to a router. Envoy initiates the connection but receives requests from router. Allow ephemeral Envoy side-cars to "announce" themselves to well-knonw routers.
 
-*inverted server*: put an amqp_server bridge on an *outgoing* envoy connection to a router. Envoy initiates the connection but receives requests from router. Allow Envoy side-cars to "announce" themselves to the router as well as vice-versa.
+*improved flow control*: Review & limit internal buffering using AMQP credit and Envoy
+watermark buffers.
 
 ## Possible optimizations
 

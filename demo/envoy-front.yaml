@@ -1,0 +1,71 @@
+
+# Envoy proxy feeding HTTP requests to a dispatch router
+
+# TODO aconway 2018-06-25:
+# - show some stuff goes direct to HTTP, not routed (vhost, prefix)
+# - backend routes by address and vhost also.
+
+static_resources:
+  listeners:
+  - name: http_in
+    address: { socket_address: { address: 0.0.0.0, port_value: 8000 } }
+    filter_chains:
+    - filters:
+      - name: envoy.http_connection_manager
+        config:
+          # Envoy routing table
+          route_config:
+            virtual_hosts:
+
+            - name: routed
+              domains: ["localhost:8000"]
+              routes:
+              - match: { prefix: "/server" }
+                route: { cluster: amqp_server }
+              - match: { prefix: "/" }
+                route: { cluster: amqp_relay }
+
+            - name: bare
+              domains: ["127.0.0.1:8000"]
+              routes:
+              - match: { prefix: "/" }
+                route: { cluster: redhat, auto_host_rewrite: true }
+
+          http_filters:
+          - name: envoy.router
+            config: {}
+          stat_prefix: http_in
+
+  clusters:
+
+  - name: amqp_relay
+    filters:
+      # The AMQP client filter
+    - name: envoy.filters.network.amqp_client
+      config:
+        bridge:
+          named_relay: "http-relay" # AMQP relay address for HTTP
+    connect_timeout: 0.25s
+    type: static
+    # Connects to dispatch router
+    hosts: [{ socket_address: { address: 127.0.0.1, port_value: 5672 }}]
+
+  - name: amqp_server
+    filters:
+    - name: envoy.filters.network.amqp_client
+    connect_timeout: 0.25s
+    type: static
+    # Connects to dispatch router
+    hosts: [{ socket_address: { address: 127.0.0.1, port_value: 5672 }}]
+
+  - name: redhat
+    connect_timeout: 0.25s
+    type: logical_dns
+    dns_lookup_family: v4_only
+    hosts: [{ socket_address: { address: www.redhat.com, port_value: 80 }}]
+
+# Envoy boilerplate
+admin:
+  access_log_path: /tmp/envoy-front-access.log
+  address:
+    socket_address: { address: 127.0.0.1, port_value: 9901 }

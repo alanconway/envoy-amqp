@@ -1,8 +1,25 @@
-run_envoy() {
-    ../bazel-bin/envoy --disable-hot-restart -c $1.yaml 2>&1 | tee /tmp/$1.log
-}
-run_envoy env1&
-run_envoy env3&
-qdrouterd -c qdr2.conf 2>&1 | tee /tmp/qdr2.log&
+# Run an envoy/dispatch/envoy sandwich
 
-wait -n || exit 1
+pkill -9 envoy
+pkill -9 qdrouterd
+
+LOGS=/tmp/demo
+mkdir -p $LOGS
+rm -f $LOGS/*
+
+background() {
+    NAME=$1; shift;
+    { "$@" > $LOGS/$NAME.log 2>&1 || { echo "ERROR - $NAME $?"; exit 1; } } &
+}
+
+run_envoy() {
+    background $1 ../bazel-bin/envoy --disable-hot-restart -c $1.yaml
+}
+
+run_envoy envoy-front
+run_envoy envoy-back
+background qdrouterd qdrouterd -c qdrouterd.conf
+background server ../proton/bld/cpp/examples/server_direct -a :10001
+
+tail -F $LOGS/*.log&
+wait

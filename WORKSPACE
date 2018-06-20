@@ -6,7 +6,7 @@ local_repository(
     path = "envoy",
 )
 
-# Must be hand-built with static libs, see bazel-proton branch for broken genrule
+# Must be hand-built with static libs.
 #     cd proton/bld && cmake -DCMAKE_INSTALL_PREFIX=install -DBUILD_STATIC_LIBS=YES -DSSL_IMPL=none .. && make install
 new_local_repository(
     name = "proton",

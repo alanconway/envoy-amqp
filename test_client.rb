@@ -130,11 +130,11 @@ class EnvoyAmqpClientTest < MiniTest::Test
   def test_errors
     # Errors from the AMQP server
     r = @http.post(@a, "foo", { 'outcome'=>'reject' })
-    assert_equal ["502", "Bad Gateway", "Bad AMQP outcome: rejected"], [r.code, r.message, r.body]
+    assert_equal ["502", "Bad Gateway", "rejected"], [r.code, r.message, r.body]
     r = @http.post(@a, "foo", { 'outcome'=>'release' })
-    assert_equal ["502", "Bad Gateway", "Bad AMQP outcome: released"], [r.code, r.message, r.body]
+    assert_equal ["502", "Bad Gateway", "released"], [r.code, r.message, r.body]
     r = @http.post(@a, "foo", { 'outcome'=>'modify' })
-    assert_equal ["502", "Bad Gateway", "Bad AMQP outcome: modified"], [r.code, r.message, r.body]
+    assert_equal ["502", "Bad Gateway", "modified"], [r.code, r.message, r.body]
   end
 
   def test_request_relay

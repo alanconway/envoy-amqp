@@ -213,8 +213,9 @@ class EnvoyAmqpServerTest < MiniTest::Test
     a = "/#{__method__}/"
     requests = ["a","b","c","d"].collect { |x| Message.new(x, {:subject=>"POST", :address=>a+x}) }
     responses = requests.collect { |req| request(req) }
-    assert_equal requests.collect { |m| "response=#{m.body}" },
-                 responses.collect { |m| m.body }
+    requests.zip(responses).each do |req, res|
+      assert_equal "response=#{req.body}", res.body, res.inspect
+    end
   end
 
   # "pipeline" in HTTP-speak means sending multiple requests before receiving a response.

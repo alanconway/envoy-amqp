@@ -5,19 +5,42 @@ option go_package = "v2";
 
 import "validate/validate.proto";
 
-// [#protodoc-title: AMQP Bridge (client or server)]
-// AMQP Bridge :ref:`configuration overview <config_network_filters_amqp_bridge>`.
+// TODO aconway 2018-06-26: API doc.
 
+// Common configuration for client and server filters.
 message AmqpBridge {
-  // Optional AMQP relay address for requests.
-  //
-  // Useful to send/receive requests via an AMQP intermediary.
-  // A client bridge will send all requests via a link to this target address.
-  // A server bridge will subscribe to this source address for requests.
-  //
-  string request_relay = 1;
+  // AMQP container-id. If not set a random UUID is generated.
+  string id = 1;
 
-  // Optional AMQP container-id.
-  // If not set a random UUID is generated.
-  string container_id = 2;
+  // Create links from these source addresses to receive messages from the peer.
+  repeated string sources = 2;
+
+  // Create links to these source addresses to send messages to the peer.
+  repeated string targets = 3;
+
+  // Use ANONYMOUS-RELAY to send messages if the peer offers it
+  bool anonymous_relay = 4;
+
+  // Use a named relay address to send messages.
+  // If both anonymous_relay and named_relay are set, prefer anonymous if offered.
+  string named_relay = 5;
+}
+
+// Configuration for amqp_client filter.
+message AmqpClient {
+  // If the bridge is configured to relay, use that to send requests.
+  // Otheriwse auto-create links with request "to" address as target.
+  AmqpBridge bridge = 1;
+}
+
+// Configuration for amqp_server filter
+//
+// The server accepts links from sources (including dynamic sources) from the
+// peer, and will use them in preference to relay or auto_link for reply_to
+message AmqpServer {
+  AmqpBridge bridge = 1;
+
+  // Automatically create links with "reply_to" target address if set
+  // and no other suitable link or relay is available.
+  bool auto_link = 2;
 }
