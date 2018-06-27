@@ -61,7 +61,7 @@ following types:
 
 If the AMQP content-type is set it will be used in favour of the defaults above.
 
-Requests with other AMQP body types (sequence sections or value sections other than the types above) will rejected via the AMQP message disposition.
+Requests with other AMQP body types (sequence sections or value sections other than the types above) will be rejected via the AMQP message disposition.
 
 [message-props]: http://docs.oasis-open.org/amqp/core/v1.0/os/amqp-core-messaging-v1.0-os.html#type-properties
 [message-format]: http://docs.oasis-open.org/amqp/core/v1.0/os/amqp-core-messaging-v1.0-os.html#section-message-format
