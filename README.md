@@ -41,6 +41,23 @@ The AMQP filters focus only on bridging between HTTP and AMQP, and managing AMQP
 links. Envoy's built-in HTTP router provides rich routing and manipulation of
 HTTP requests and responses, all of which can be used with bridged AMQP messages.
 
+### Security
+
+Envoy has full https support for HTTP client/server connections, there is no
+change there.  AMQP client/server connections are subject to AMQP security
+implemented by proton, which includes TLS and SASL. The two security realms are
+configured separately and do not interact.
+
+*TODO implement security configuration for filters: should it follow the proton config model or mimic/reuse Envoy tls_context?"*
+
+*TODO investigate sharing certificates etc. between proton and Envoy*
+
+### Combining with Qpid Dispatch
+
+Tunneling HTTP over an AMQP network using Qpid Dispatch router looks like this:
+
+    -HTTP-> Envoy[amqp_client] -AMQP-> {Dispatch network} -AMQP-> [amqp_server]Envoy -HTTP->
+
 ## Mapping
 
 ### Message Body
@@ -48,7 +65,7 @@ HTTP requests and responses, all of which can be used with bridged AMQP messages
 An AMQP message body [consists of one of the following three choices: one or more data sections, one or more amqp-sequence sections, or a single amqp-value section.][message-format]
 
 A HTTP message body corresponds to an AMQP message with a single `data`
-section. The HTTP Content-Type and Content-Encoding headers corresponds to
+section. The HTTP Content-Type a nd Content-Encoding headers corresponds to
 equivalent AMQP message properties.
 
 If an AMQP message has multiple data sections, only the first is used, the rest
@@ -69,9 +86,13 @@ Requests with other AMQP body types (sequence sections or value sections other t
 ### Headers and Application-Properties
 
 HTTP headers correspond to AMQP application-properties with string values, AMQP
-application-properties with non-string values are ignored.  HTTP header names
-are case-insensitive, AMQP application-property keys taken from HTTP headers are
-always lower-case.
+application-properties with non-string values are ignored.
+
+HTTP header names are *case-insensitive*, AMQP application-property keys are not.
+
+To ensure consistent mapping, header names in AMQP property keys are *always
+lower-case*. HTTP headers are normalized to lower-case on conversion to AMQP, and
+AMQP property-keys containing capitals are ignored when converting to HTTP.
 
 ### AMQP Request to HTTP
 
@@ -152,6 +173,7 @@ Fixes and missing features of the bridge:
 - [ ] Use Envoy codec for better HTTP 1.1, and HTTP 2 support.
 - [ ] Error information on reject/modify dispositions
 - [ ] Set AMQP host from HTTP host for multi-tenancy
+- [ ] Full Proton configuration: SASL, SSL etc. (see Qpid Dispatch connector/listener config)
 - [ ] Performance and stability: pipelining/multiplexing issues.
 - [ ] Redirect proton logs to Envoy trace logs.
 

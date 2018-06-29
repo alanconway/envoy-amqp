@@ -123,8 +123,15 @@ class EnvoyAmqpClientTest < MiniTest::Test
     assert_hash_contains({"x"=>"y"}, s.properties)
   end
 
+  def test_caps
+    # HTTP header names are lower-case in AMQP
+    @http.post(@a, "foo", { "x" => "y", "Heads-Up" => "z" })
+    s = server_pop
+    assert_equal ["y", "z", nil], [s["x"], s["heads-up"], s["HEADS-UP"]]
+  end
+
   def test_response
-    # send a request with an encoded response, verify it is properly mapped to HTTP
+    # FIXME aconway 2018-06-29: send a request with an encoded response.
   end
 
   def test_errors

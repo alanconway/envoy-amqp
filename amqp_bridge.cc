@@ -183,9 +183,11 @@ private:
   }
 
   void header(const std::pair<std::string, proton::scalar> &kv) {
-    Http::LowerCaseString name(kv.first);
-    if (!contentHeader(name) && kv.second.type() == proton::STRING) {
-      header(name, proton::get<std::string>(kv.second));
+    if (kv.second.type() == proton::STRING) { // Strings only
+      Http::LowerCaseString name(kv.first);
+      // Ignore names with caps and special content-related headers
+      if (name.get() == kv.first && !contentHeader(name))
+        header(name, proton::get<std::string>(kv.second));
     }
   }
 
@@ -837,8 +839,8 @@ private:
     try {
       return proton::coerce<CorrelationId>(m.correlation_id());
     } catch (const std::exception &e) {
-      CONN_LOG(error, "invalid correlation-id {}: {}",
-               m.correlation_id(), log(m));
+      CONN_LOG(error, "invalid correlation-id {}: {}", m.correlation_id(),
+               log(m));
       throw EnvoyException("invalid correlation id");
     }
   }
@@ -851,8 +853,8 @@ private:
       i->second = m;
       sendHttpResponses();
     } else {
-      CONN_LOG(error, "unknown correlation-id {}: {}",
-               m.correlation_id(), log(m));
+      CONN_LOG(error, "unknown correlation-id {}: {}", m.correlation_id(),
+               log(m));
       throw EnvoyException("unknown correlation-id");
     }
   }

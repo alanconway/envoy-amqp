@@ -163,6 +163,23 @@ class EnvoyAmqpServerTest < MiniTest::Test
     assert_equal "pong", res["ping"], res
   end
 
+  def test_caps
+    a = "/#{__method__}"
+    req = Message.new("hello",
+      {:subject=>"GET", :address=>a,
+        :properties=>{
+          "good"=>"bad",
+          "Caps"=>"xxx",        # Ignore properties with any capitals
+          "test-h-up"=>"down",
+          "test-h-More-Caps"=>"yyy"
+        }})
+    res = request(req)
+
+    s = server_req
+    assert_equal(["bad", nil, nil], [s["good"], s["Caps"], s["caps"]])
+    assert_equal(["down", nil, nil], [res["up"], res["More-Caps"], res["more-caps"]])
+  end
+
   def test_methods
     addr = "/#{__method__}"
     request(Message.new("blubber", {:subject=>"POST", :address=>addr+"/x"}))
