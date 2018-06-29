@@ -199,3 +199,7 @@ watermark buffers.
 ## Possible optimizations
 
 *Eliminate double HTTP codec*: amqp_bridge composes/parses HTTP by itself and exchanges HTTP bytes with the Envoy connection-manager, which must parse/compose again. Can we eliminate the double codec?
+
+## Open questions
+
+Default to anonymous-relay? For a server bridge, anonymous-relay is most likely the best way to send responses. For a client bridge, anonymous-relay seems a good default if available, unless a named-relay is explicitly provided. Replace anonymous-relay with a link-per-address property with the opposite meaning?

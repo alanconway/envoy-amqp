@@ -1,11 +1,39 @@
-
 # Envoy proxy feeding HTTP requests to a dispatch router
-
-# TODO aconway 2018-06-25:
-# - show some stuff goes direct to HTTP, not routed (vhost, prefix)
-# - backend routes by address and vhost also.
+#
+# SUMMARY:
+#  localhost:8000/*      -> dispatch router
+#  127.0.0.1:8000/       -> redhat.com direct (vhost match)
+#  localhost:8000/server -> example AMQP server direct
 
 static_resources:
+  # Envoy calls outgoing connections "clusters"
+  clusters:
+  - name: amqp_router           # AMQP to router
+    filters:
+    # Configure as AMQP client to qdrouterd
+    - name: envoy.filters.network.amqp_client
+      # Relay HTTP over this AMQP address - message 'to' address carries URL
+      config: { bridge: { named_relay: "http-relay" } }
+    hosts: [{ socket_address: { address: 127.0.0.1, port_value: 5672 }}]
+    type: static
+    connect_timeout: 0.25s
+
+  - name: redhat                # Normal HTTP to redhat.com
+    connect_timeout: 0.25s
+    type: logical_dns
+    dns_lookup_family: v4_only
+    hosts: [{ socket_address: { address: www.redhat.com, port_value: 80 }}]
+
+  - name: amqp_server           # AMQP direct to C++ example server
+    filters:
+    # Configure as AMQP client to C++ example server_direct.
+    # Example modified to create reply link, we could also configure it here.
+    - name: envoy.filters.network.amqp_client
+    connect_timeout: 0.25s
+    type: static
+    hosts: [{ socket_address: { address: 127.0.0.1, port_value: 10001 }}]
+
+  # Remaining config is standard Envoy HTTP routing
   listeners:
   - name: http_in
     address: { socket_address: { address: 0.0.0.0, port_value: 8000 } }
@@ -23,9 +51,9 @@ static_resources:
               - match: { prefix: "/server" }
                 route: { cluster: amqp_server }
               - match: { prefix: "/" }
-                route: { cluster: amqp_relay }
+                route: { cluster: amqp_router }
 
-            - name: bare
+            - name: redhat_direct
               domains: ["127.0.0.1:8000"]
               routes:
               - match: { prefix: "/" }
@@ -35,34 +63,6 @@ static_resources:
           - name: envoy.router
             config: {}
           stat_prefix: http_in
-
-  clusters:
-
-  - name: amqp_relay
-    filters:
-      # The AMQP client filter
-    - name: envoy.filters.network.amqp_client
-      config:
-        bridge:
-          named_relay: "http-relay" # AMQP relay address for HTTP
-    connect_timeout: 0.25s
-    type: static
-    # Connects to dispatch router
-    hosts: [{ socket_address: { address: 127.0.0.1, port_value: 5672 }}]
-
-  - name: amqp_server
-    filters:
-    - name: envoy.filters.network.amqp_client
-    connect_timeout: 0.25s
-    type: static
-    # Connects to dispatch router
-    hosts: [{ socket_address: { address: 127.0.0.1, port_value: 5672 }}]
-
-  - name: redhat
-    connect_timeout: 0.25s
-    type: logical_dns
-    dns_lookup_family: v4_only
-    hosts: [{ socket_address: { address: www.redhat.com, port_value: 80 }}]
 
 # Envoy boilerplate
 admin:

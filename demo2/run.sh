@@ -2,6 +2,7 @@
 
 pkill -9 envoy
 pkill -9 qdrouterd
+sleep 1
 
 LOGS=/tmp/demo
 mkdir -p $LOGS
@@ -13,13 +14,13 @@ background() {
 }
 
 run_envoy() {
-    background $1 ../bazel-bin/envoy --disable-hot-restart -c $1.yaml
+    background $1 ../bazel-bin/envoy -l debug --disable-hot-restart -c $1.yaml
 }
 
 run_envoy envoy-front
-run_envoy envoy-back
+run_envoy envoy1
+run_envoy envoy2
 background qdrouterd qdrouterd -c qdrouterd.conf
-background server ../proton/bld/cpp/examples/server_direct -a :10001
+tail -F $LOGS/*.log
 
-tail -F $LOGS/qdrouterd.log&
 wait
