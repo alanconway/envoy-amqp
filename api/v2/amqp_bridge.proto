@@ -15,7 +15,7 @@ message AmqpBridge {
   // Create links from these source addresses to receive messages from the peer.
   repeated string sources = 2;
 
-  // Create links to these source addresses to send messages to the peer.
+  // Create links to these target addresses to send messages to the peer.
   repeated string targets = 3;
 
   // Use ANONYMOUS-RELAY to send messages if the peer offers it
