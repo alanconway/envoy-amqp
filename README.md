@@ -184,14 +184,19 @@ Testing
 
 Fixes to Envoy
 - [ ] Submit upstream filter extensions (https://github.com/envoyproxy/envoy/issues/173)
-- [ ] Callback for downstream write (https://github.com/envoyproxy/envoy/issues/3343)
+- [ ] Callback for downstream write (https://github.com/envoyproxy/envoy/issues/33simp43)
 - [ ] Load shared modules (https://github.com/envoyproxy/envoy/issues/2053)
 
 ## Missing features
 
-*service advertisement*: automatically reflect Envoy service configuration/discovery as AMQP links.
-
 *inverted server*: put an amqp_server bridge on an *outgoing* envoy connection to a router. Envoy initiates the connection but receives requests from router. Allow ephemeral Envoy side-cars to "announce" themselves to well-knonw routers.
+
+*publish/subscribe*: Allow HTTP clients to do simple send/receive.
+- No AMQP response messages, no round-trip response correlation.
+- HTTP POST sends an AMQP message, HTTP response is AMQP settlement.
+- HTTP GET receives an AMQP message, HTTP response is the message (or error)
+
+*service advertisement*: automatically reflect Envoy service configuration/discovery as AMQP links.
 
 *improved flow control*: Review & limit internal buffering using AMQP credit and Envoy
 watermark buffers.
