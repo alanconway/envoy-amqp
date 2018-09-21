@@ -37,8 +37,8 @@ Note that you can query any URL in the admin service address space.
 qdrouterd is configured dynamically by the envoy routers setting up
 subscriber links, only one address per sidecar is needed.
 
-[Future work: it would be nice if envoy could also initiate the connection
-to qdrouterd. See the to-do list in ../README.md]
+Future work: envoy needs to be able to initiate the connection to
+qdrouterd. See the to-do list in ../README.md
 
 Here's what happens in detail:
 

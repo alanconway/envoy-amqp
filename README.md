@@ -20,6 +20,48 @@ but only the AMQP request/response pattern is in scope here.
 [Qpid Dispatch]: http://qpid.apache.org/components/dispatch-router
 [Qpid Proton C++]: http://qpid.apache.org/releases/qpid-proton-0.23.0/proton/cpp/api/index.html
 
+## Use cases
+
+The overall use-case is an application that mixes AMQP and HTTP.
+
+This could happen because:
+
+1. An AMQP network application includes components that have REST APIs
+   for management/monitoring, or has HTTP endpoints at the edges.
+2. HTTP application uses AMQP for performance/quality of service in
+   specific cases, or has AMQP at the edges.
+3. A HTTP application and an AMQP application walk into a bar...
+
+### Tunneling HTTP over AMQP
+
+HTTP clients talking to HTTP services but routed over an AMQP
+interconnect network.  HTTP URLs become AMQP addresses so they can be
+configured and routed in the same way as "real" AMQP address. The AMQP
+network provides a consistent point of configuration for routing,
+discovery, fail-over of both HTTP and AMQP services.
+
+### AMQP client HTTP service
+
+AMQP clients interact with a mix of AMQP and HTTP services, but treat
+them all as AMQP services.
+
+* No need for bilingual clients or developers
+* Service implementations can change without updating clients.
+
+### HTTP client to AMQP service
+
+HTTP clients interact with a mix of AMQP and HTTP services, but treat
+them all as HTTP services.
+
+* No need for bilingual clients or developers
+* Service implementations can change without updating clients.
+
+There are 3 sub-cases
+
+* HTTP request/respnses to AMQP request/response server (e.g. AMQP management service)
+* HTTP send a message to an AMQP server (not yet implemented)
+* HTTP receive a message from an AMQP server (not yet implemented)
+
 ## Design
 
 A pair of Envoy `Network::Filter` classes convert between AMQP messages (body
@@ -73,8 +115,9 @@ are ignored.
 
 An AMQP messsage with a `value` section is allowed if the value has one of the
 following types:
-- string: HTTP Content-Type defaults to `text/plain; charset=utf-8`
-- binary: HTTP Content-Type defaults to `application/octet-stream`
+
+* string: HTTP Content-Type defaults to `text/plain; charset=utf-8`
+* binary: HTTP Content-Type defaults to `application/octet-stream`
 
 If the AMQP content-type is set it will be used in favour of the defaults above.
 
@@ -127,8 +170,9 @@ AMQP message properties:
 ### HTTP response from AMQP
 
 HTTP status-code is taken from AMQP `subject`
-- if subject starts with a valid HTTP response code, use it.
-- else use "200"
+
+* if subject starts with a valid HTTP response code, use it.
+* else use "200"
 
 If an AMQP request is released, rejected or modified, the outcome becomes a HTTP
 response "502 Bad Gateway" with body string "released", "rejected" or "modified"
@@ -169,32 +213,32 @@ There are rather rough system tests implemented in ruby, run them with:
 ## Cleanup and complete
 
 Fixes and missing features of the bridge:
-- [ ] Implement heartbeats
-- [ ] Use Envoy codec for better HTTP 1.1, and HTTP 2 support.
-- [ ] Error information on reject/modify dispositions
-- [ ] Set AMQP host from HTTP host for multi-tenancy
-- [ ] Full Proton configuration: SASL, SSL etc. (see Qpid Dispatch connector/listener config)
-- [ ] Performance and stability: pipelining/multiplexing issues.
-- [ ] Redirect proton logs to Envoy trace logs.
+
+* [ ] Implement heartbeats
+* [ ] Use Envoy codec for better HTTP 1.1, and HTTP 2 support.
+* [ ] Error information on reject/modify dispositions
+* [ ] Set AMQP host from HTTP host for multi-tenancy
+* [ ] Full Proton configuration: SASL, SSL etc. (see Qpid Dispatch connector/listener config)
+* [ ] Performance and stability: pipelining/multiplexing issues.
+* [ ] Redirect proton logs to Envoy trace logs.
 
 Testing
-- [ ] Automated unit and integration tests under bazel
-- [ ] Multi-host tests in more realistic setting (including dispatch, kubernetes etc.)
-- [ ] Test all HTTP methods, not just GET and POST
+
+* [ ] Automated unit and integration tests under bazel
+* [ ] Multi-host tests in more realistic setting (including dispatch, kubernetes etc.)
+* [ ] Test all HTTP methods, not just GET and POST
 
 Fixes to Envoy
-- [ ] Submit upstream filter extensions (https://github.com/envoyproxy/envoy/issues/173)
-- [ ] Callback for downstream write (https://github.com/envoyproxy/envoy/issues/33simp43)
-- [ ] Load shared modules (https://github.com/envoyproxy/envoy/issues/2053)
+
+* [ ] Submit upstream filter extensions (https://github.com/envoyproxy/envoy/issues/173)
+* [ ] Callback for downstream write (https://github.com/envoyproxy/envoy/issues/33simp43)
+* [ ] Load shared modules (https://github.com/envoyproxy/envoy/issues/2053)
 
 ## Missing features
 
 *inverted server*: put an amqp_server bridge on an *outgoing* envoy connection to a router. Envoy initiates the connection but receives requests from router. Allow ephemeral Envoy side-cars to "announce" themselves to well-knonw routers.
 
-*publish/subscribe*: Allow HTTP clients to do simple send/receive.
-- No AMQP response messages, no round-trip response correlation.
-- HTTP POST sends an AMQP message, HTTP response is AMQP settlement.
-- HTTP GET receives an AMQP message, HTTP response is the message (or error)
+*send/receive*: Allow HTTP clients to do simple send/receive without request-response
 
 *service advertisement*: automatically reflect Envoy service configuration/discovery as AMQP links.
 
