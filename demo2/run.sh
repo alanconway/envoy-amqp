@@ -1,10 +1,12 @@
 # Run an envoy/dispatch/envoy sandwich
 
-pkill -9 envoy
-pkill -9 qdrouterd
+set -e
+
+sudo pkill -9 envoy || true
+pkill -9 qdrouterd || true
 sleep 1
 
-LOGS=/tmp/demo
+LOGS=logs
 mkdir -p $LOGS
 rm -f $LOGS/*
 
@@ -14,13 +16,13 @@ background() {
 }
 
 run_envoy() {
-    background $1 ../bazel-bin/envoy -l debug --disable-hot-restart -c $1.yaml
+    background "$@" ../bazel-bin/envoy -l debug --disable-hot-restart -c $1.yaml
 }
 
-run_envoy envoy-front
-run_envoy envoy1
-run_envoy envoy2
+run_envoy front sudo
+run_envoy ernie
+run_envoy bert
 background qdrouterd qdrouterd -c qdrouterd.conf
-tail -F $LOGS/*.log
 
-wait
+tail -F $LOGS/*.log&
+wait -n %1 %2 %3 %4 || echo "something failed"

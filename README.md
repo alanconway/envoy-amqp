@@ -198,7 +198,7 @@ You need all the requirements to build Envoy, see https://www.envoyproxy.io
 
 You need to build proton manually *TODO add bazel genrule*
 
-    cd proton/bld && cmake -DCMAKE_INSTALL_PREFIX=install -DBUILD_STATIC_LIBS=YES -DSSL_IMPL=none .. && make install
+    cd proton/bld && cmake -DCMAKE_INSTALL_PREFIX=install -DBUILD_STATIC_LIBS=YES -DSSL_IMPL=none -DENABLE_JSONCPP=NO .. && make install
 
 Build the AMQP filters statically linked into envoy with:
 

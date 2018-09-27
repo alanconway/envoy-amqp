@@ -1,64 +1,49 @@
 # Host-routed demo
 
-Routing HTTP requests via dispatch to different back-end services,
-based on the host name used to connect to a single envoy proxy.
+Using an envoy router to route HTTP requests by host name to REST services,
+using Qpid Dispatch Router to route some of the requests.
 
-## What's running
+This example uses 3 names for the local host (set up in /etc/hosts)
+- ernie.local - routes to Dispatch with AMQP address "ernie"
+- bert.local  - routes to Dispatch with AMQP address "bert"
+- grover.local - routes to a HTTP site api.github.com
 
 $ sh run.sh # runs the following processes
 
-envoy-front -> qdrouterd -> envoy1
-                         -> envoy2
+envoy(front.yaml) (on port 80) -> qdrouterd -> envoy(ernie.yaml)
+                                            -> envoy(bert.yaml)
 
-## Configuration files
+## The Demonstration
 
-envoy-front.yaml: routes to qdrouterd using different AMQP addresses
-based on host:
-- localhost -> "service1"
-- 127.0.0.1 -> "service2"
+Query issues.apache.org via host "ernie.local"
 
-qdrouterd.conf: connects to envoy1 and envoy2.
+    curl -s 'http://ernie.local/jira/rest/api/2/search?jql=assignee=aconway&maxResults=1&fields=summary' | json_reformat
 
-envoy1/2.yaml:
-- subscribes to service1 or service2 on qdrouterd (as sidecar)
-- forwards all requests to it's own admin port (a handy REST service for demo)
+Query bugzilla.mozilla.org for bugs via host "bert.local"
 
-## The demonstration
+    curl -s 'http://bert.local/rest/bug/9999?include_fields=summary,id' | json_reformat
+    curl -s 'http://bert.local/rest/bug/1234?include_fields=summary,id' | json_reformat
 
-Query the admin service of envoy1 or 2 by changing the host used to
-connect to envoy-front.
+Query api.github.com for user info via host "gonzo.local"
 
-$ curl -w "\n" localhost:8000/listeners # This goes to envoy1
-["0.0.0.0:15672"]
-$ curl -w "\n" 127.0.0.1:8000/listeners # This goes to envoy2
-["0.0.0.0:25672"]
+    curl -v 'http://grover.local/users/alanconway'
 
-Note that you can query any URL in the admin service address space.
-qdrouterd is configured dynamically by the envoy routers setting up
-subscriber links, only one address per sidecar is needed.
+## Things to note
 
-Future work: envoy needs to be able to initiate the connection to
-qdrouterd. See the to-do list in ../README.md
+### Dynamic configuration of Dispatch
 
-Here's what happens in detail:
+Dispatch router has no configuration except to establish connections. The envoy routers create links according to their configuration, and Dispatch automatically propagates those link addresses in the AMQP network.
 
-1. qdrouterd connects to both envoy1 and envoy2
-2. envoy1/2 AMQP bridge creates subscriber links to service1, service2
-3. curl connects to envoy-front.
-4. Envoy-front forwards requests to qdrouterd, using the correct link
-   address depending on the host (127.0.0.1 or localhost).
-   It creates a dynamic-source "reply-to" address for replies.
-5. qdrouterd routes addresses service1 and service2 as normal,
-   traffic goes to envoy1 or envoy2 as appropriate
-6. envoy1/2 forward all requests to their own "admin" ports.
-7. The "to" address path is unaltered from the original URL,
-   so the REST request is interpreted as normal by the admin service
-8. REST responses are sent by envoy1/2 back to qdrouterd via ANONYMOUS_RELAY
-   Their "to" address is the request's "reply-to" address.
-8. qdrouterd routes back to envoy-front using "reply-to" (now "to") address
-9. envoy-front responds to the curl client
+Future work: envoy needs to be able to initiate the connection to qdrouterd to further reduce static configuration. See the to-do list in ../README.MD
 
-Tah Dah!
+### Dispatch is not aware of every URI
 
+A REST service consists of many URIs with a common prefix, new URIs are created as the service runs - for example in the Bugzilla REST API every bug has it's own URI. We can't statically map individual URIs to AMQP addresses because the set of URIs is open.
+
+Instead, each AMQP address known to dispatch represents a HTTP "destination" which identifies an envoy server-side endpoint. The AMQP to: address on each message provides the full URI path to be interpreted by the envoy server or other HTTP service. Each AMQP addresses is like a "named relay" that tunnels HTTP requests to many related URIs.
+
+On the client side, envoy can use host, URI prefix, query and HTTP headers to select an AMQP address. On the server side, envoy can rewrite the host and path prefix to match local expectations before forwarding the HTTP requests.
+
+Dispatch routing allows the envoy server-side endpoints to be relocated, load-balanced and so on without updating client-side configuration.
 
 
