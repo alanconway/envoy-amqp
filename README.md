@@ -2,6 +2,26 @@
 
 **WORK IN PROGRESS** - this is not yet complete or supported.
 
+## Building and testing
+
+You need all the requirements to build Envoy, see https://www.envoyproxy.io
+
+The envoy/ and proton/ directories are git submodules, to populate them:
+
+    git submodule update
+
+You need to build proton manually *TODO add bazel genrule*
+
+    cd proton/bld && cmake -DCMAKE_INSTALL_PREFIX=install -DBUILD_STATIC_LIBS=YES -DSSL_IMPL=none -DENABLE_JSONCPP=NO .. && make install
+
+Build the AMQP filters statically linked into envoy with:
+
+    bazel build
+
+There are rather rough system tests implemented in ruby, run them with:
+
+    bazel test ...
+
 ## Overview
 
 Goal: Extend the [Envoy][] HTTP router to translate between HTTP and the [AMQP][]
@@ -191,22 +211,6 @@ The server can also automatically create sending links if configured to do so.
 
 Both client and server can be configured to create a fixed set of named sending
 and receiving links; to advertise addresses, set up named relays etc.
-
-## Building and testing
-
-You need all the requirements to build Envoy, see https://www.envoyproxy.io
-
-You need to build proton manually *TODO add bazel genrule*
-
-    cd proton/bld && cmake -DCMAKE_INSTALL_PREFIX=install -DBUILD_STATIC_LIBS=YES -DSSL_IMPL=none -DENABLE_JSONCPP=NO .. && make install
-
-Build the AMQP filters statically linked into envoy with:
-
-    bazel build
-
-There are rather rough system tests implemented in ruby, run them with:
-
-    bazel test ...
 
 # Things to do
 
