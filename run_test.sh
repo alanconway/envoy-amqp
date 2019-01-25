@@ -12,7 +12,7 @@ until listening 9901 && listening 18000 && listening 15672; do
 done
 # curl http://localhost:9901/logging?filter=debug
 
-export RUBYLIB=external/proton/ruby/lib:external/proton/bld/ruby
+export RUBYLIB=external/proton/ruby/lib:external/proton/ruby
 for TEST in "$@"; do
     ruby $TEST -v
 done

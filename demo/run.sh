@@ -19,7 +19,7 @@ run_envoy() {
 run_envoy envoy-front
 run_envoy envoy-back
 background qdrouterd qdrouterd -c qdrouterd.conf
-background server ../proton/bld/cpp/examples/server_direct -a :10001
+background server ../proton/cpp/examples/server_direct -a :10001
 
 tail -F $LOGS/qdrouterd.log&
 wait

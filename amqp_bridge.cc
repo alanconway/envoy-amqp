@@ -890,7 +890,7 @@ public:
   Network::FilterFactoryCb
   createFilterFactory(const Json::Object &,
                       Server::Configuration::FactoryContext &) {
-    NOT_IMPLEMENTED;
+    NOT_IMPLEMENTED_GCOVR_EXCL_LINE;
   }
 
   typedef Registry::RegisterFactory<

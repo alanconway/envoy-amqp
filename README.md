@@ -4,17 +4,14 @@
 
 ## Building and testing
 
-You need all the requirements to build Envoy, see https://www.envoyproxy.io
+You need all the requirements to build Envoy (see https://www.envoyproxy.io)
+and Proton C++ (see https://github.com/apache/qpid-proton)
 
 The envoy/ and proton/ directories are git submodules, to populate them:
 
     git submodule update
 
-You need to build proton manually *TODO add bazel genrule*
-
-    cd proton/bld && cmake -DCMAKE_INSTALL_PREFIX=install -DBUILD_STATIC_LIBS=YES -DSSL_IMPL=none -DENABLE_JSONCPP=NO .. && make install
-
-Build the AMQP filters statically linked into envoy with:
+TO build the AMQP filters statically linked into envoy:
 
     bazel build
 
