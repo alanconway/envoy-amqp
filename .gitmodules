@@ -1,6 +1,6 @@
 [submodule "envoy"]
 	path = envoy
-	url = https://github.com/envoyproxy/envoy.git
+	url = https://github.com/alanconway/envoy.git
 [submodule "proton"]
 	path = proton
 	url = https://github.com/apache/qpid-proton
