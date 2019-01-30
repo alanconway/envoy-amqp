@@ -9,7 +9,7 @@ and Proton C++ (see https://github.com/apache/qpid-proton)
 
 The envoy/ and proton/ directories are git submodules, to populate them:
 
-    git submodule update
+    git submodule update --init
 
 TO build the AMQP filters statically linked into envoy:
 
