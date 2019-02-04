@@ -23,7 +23,7 @@ static_resources:
               domains: ["grover.local"]
               routes:
               - match: { prefix: "/" }
-                route: { cluster: grover, auto_host_rewrite: true }
+                route: { cluster: grover, host_rewrite: echo.jsontest.com }
           http_filters:
           - name: envoy.router
             config: {}
@@ -34,7 +34,7 @@ static_resources:
     filters:
     - name: envoy.filters.network.amqp_client
       config: { bridge: { named_relay: ernie } }
-    hosts: [{ socket_address: { address: 127.0.0.1, port_value: 5672 }}]
+    hosts: [{ socket_address: { address: 127.0.0.1, port_value: 15672 }}]
     type: static
     connect_timeout: 0.25s
 
@@ -42,16 +42,15 @@ static_resources:
     filters:
     - name: envoy.filters.network.amqp_client
       config: { bridge: { named_relay: bert } }
-    hosts: [{ socket_address: { address: 127.0.0.1, port_value: 5672 }}]
+    hosts: [{ socket_address: { address: 127.0.0.1, port_value: 25672 }}]
     type: static
     connect_timeout: 0.25s
 
-  - name: grover          # Direct to github via HTTP
-    hosts: [{ socket_address: { address: api.github.com, port_value: 443 }}]
+  - name: grover          # Direct to echo.jsontest.com via HTTPS
+    hosts: [{ socket_address: { address: echo.jsontest.com, port_value: 80 }}]
     connect_timeout: 0.25s
     type: logical_dns
     dns_lookup_family: v4_only
-    tls_context: { }
 
 # Envoy boilerplate
 admin:

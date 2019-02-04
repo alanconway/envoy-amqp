@@ -3,10 +3,17 @@
 Using an envoy router to route HTTP requests by host name to REST services,
 using Qpid Dispatch Router to route some of the requests.
 
-This example uses 3 names for the local host (set up in /etc/hosts)
+To run the example you need permission to listen on port 80 and you must any HTTP server already listening there.
+Alternatively you can edit the demo configuration and change the port.
+
+This example needs the following aliases in /etc/hosts:
+
+    127.0.0.1  ernie.local bert.local grover.local builds.apache.org
+
+These are used to route messages by virtual host name:
 - ernie.local - routes to Dispatch with AMQP address "ernie"
 - bert.local  - routes to Dispatch with AMQP address "bert"
-- grover.local - routes to a HTTP site api.github.com
+- grover.local - routes to HTTP site echo.jsontest.com
 
 $ sh run.sh # runs the following processes
 
@@ -24,9 +31,9 @@ Query bugzilla.mozilla.org for bugs via host "bert.local"
     curl -s 'http://bert.local/rest/bug/9999?include_fields=summary,id' | json_reformat
     curl -s 'http://bert.local/rest/bug/1234?include_fields=summary,id' | json_reformat
 
-Query api.github.com for user info via host "gonzo.local"
+Query echo.jsontest.com via host "grover.local":
 
-    curl -v 'http://grover.local/users/alanconway'
+    curl -v http://grover.local/hello/world
 
 ## Things to note
 
